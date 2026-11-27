@@ -62,7 +62,7 @@ fn sft_4_1_ordering_and_exact_lookup() {
     );
     let mut expect: Vec<(u32, u64, i64)> = Vec::new();
     for i in 0..1000u32 {
-        let base = (rng.next() % 50);
+        let base = rng.next() % 50;
         for j in 0..5u64 {
             let v = (i as i64) * 100 + (j as i64);
             b.add(cell(i, base + j, (i as u64) * 10 + j, Value::I64(v)));

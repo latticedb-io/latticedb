@@ -253,6 +253,18 @@ impl PartValueType {
     }
 }
 
+/// One patched run-directory entry (SPEC-03 §4 fields + zone maps).
+type RunDirEntry = (
+    u32,       // node_id
+    u64,       // first_k
+    u32,       // cell_count
+    u32,       // present_count
+    u64,       // data_offset
+    ZoneBytes, // zone_lo
+    ZoneBytes, // zone_hi
+    u32,       // zone_nulls
+);
+
 /// Builder: cells may arrive in any order; `finish()` sorts, rejects
 /// duplicate `(node, k)`, groups runs per node, and encodes the image.
 pub struct PartBuilder {
@@ -348,7 +360,7 @@ impl PartBuilder {
         // data section
         let data_start = out.len();
         let mut presence = Vec::new();
-        let mut entries: Vec<(u32, u64, u32, u32, u64, ZoneBytes, ZoneBytes, u32)> = Vec::new();
+        let mut entries: Vec<RunDirEntry> = Vec::new();
         for (node, run_cells) in &runs {
             let cell_count = run_cells.len() as u32;
             let mut values: Vec<Value> = Vec::new();
@@ -649,6 +661,11 @@ impl Part {
         }
     }
 
+    /// Absent-cell count recorded in the run's zone map (SPEC-03 §4).
+    pub fn run_zone_nulls(&self, run_idx: usize) -> u32 {
+        self.runs[run_idx].zone_nulls
+    }
+
     /// Parse + verify a part image.
     pub fn from_bytes(data: &[u8]) -> Result<Part, PartError> {
         if data.len() < HEADER_LEN + 12 {
@@ -918,11 +935,6 @@ impl Part {
             out.extend(self.run_cells(i)?);
         }
         Ok(out)
-    }
-
-    /// The zone key of a decoded cell value (for merge re-zoning).
-    fn zone_of(v: &Value) -> Option<ZoneBytes> {
-        ZoneBytes::key(v)
     }
 }
 

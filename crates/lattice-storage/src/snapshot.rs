@@ -116,14 +116,6 @@ pub struct SnapshotData {
     pub catalog_valid: bool,
 }
 
-fn corrupt(codec_or_block: u64, reason: impl Into<String>) -> SnapshotError {
-    SnapshotError::StructureCorrupt {
-        block: codec_or_block,
-        offset: 0,
-        reason: reason.into(),
-    }
-}
-
 /// Encode the full snapshot payload (header + arrays + catalog + footer).
 pub fn encode_snapshot(
     database_id: u32,

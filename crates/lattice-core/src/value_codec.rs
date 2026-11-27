@@ -136,12 +136,12 @@ pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
         }
         2 => {
             let a = arr(data, &mut pos, 8)?;
-            (Value::I64(i64::from_le_bytes(le(&a[(8)..]))), pos)
+            (Value::I64(i64::from_le_bytes(le(&a[8..]))), pos)
         }
         3 => {
             let a = arr(data, &mut pos, 8)?;
             (
-                Value::F64(f64::from_bits(u64::from_le_bytes(le(&a[(8)..])))),
+                Value::F64(f64::from_bits(u64::from_le_bytes(le(&a[8..])))),
                 pos,
             )
         }
@@ -178,18 +178,15 @@ pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
         }
         7 => {
             let a = arr(data, &mut pos, 8)?;
-            (Value::Timestamp(i64::from_le_bytes(le(&a[(8)..]))), pos)
+            (Value::Timestamp(i64::from_le_bytes(le(&a[8..]))), pos)
         }
         8 => {
             let a = arr(data, &mut pos, 8)?;
-            (Value::Duration(i64::from_le_bytes(le(&a[(8)..]))), pos)
+            (Value::Duration(i64::from_le_bytes(le(&a[8..]))), pos)
         }
         9 => {
             let a = arr(data, &mut pos, 4)?;
-            (
-                Value::NodeRef(NodeId(u32::from_le_bytes(le(&a[(4)..])))),
-                pos,
-            )
+            (Value::NodeRef(NodeId(u32::from_le_bytes(le(&a[4..])))), pos)
         }
         10 => {
             need(data, pos, 1)?;
