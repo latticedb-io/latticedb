@@ -242,7 +242,7 @@ pub fn recover(
         File::open(segment_path(dir, seg))?.read_to_end(&mut data)?;
         let mut off: usize = 0;
         while off + 8 <= data.len() {
-            let len = u32::from_le_bytes(data[off..off + 4].try_into().expect("len 4"));
+            let len = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
             let over_cap = len > 64 * 1024 * 1024;
             let truncated = off + 8 + len as usize > data.len();
             if over_cap || truncated {
@@ -261,7 +261,8 @@ pub fn recover(
                 });
             }
             let body = &data[off + 8..off + 8 + len as usize];
-            let crc = u32::from_le_bytes(data[off + 4..off + 8].try_into().expect("len 4"));
+            let crc =
+                u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]);
             if crc32c_of(body) != crc {
                 if seg == active {
                     torn = true;
@@ -287,8 +288,12 @@ pub fn recover(
                     });
                 }
             };
-            let lsn = u64::from_le_bytes(body[1..9].try_into().expect("len 8"));
-            let txn_id = u64::from_le_bytes(body[9..17].try_into().expect("len 8"));
+            let lsn = u64::from_le_bytes([
+                body[1], body[2], body[3], body[4], body[5], body[6], body[7], body[8],
+            ]);
+            let txn_id = u64::from_le_bytes([
+                body[9], body[10], body[11], body[12], body[13], body[14], body[15], body[16],
+            ]);
             let payload = body[17..].to_vec();
             if lsn != next_lsn {
                 return Err(JournalError::LsnGap {
@@ -321,8 +326,20 @@ pub fn recover(
                             reason: "commit payload must be [first_lsn][last_lsn]".into(),
                         });
                     }
-                    let first = u64::from_le_bytes(payload[0..8].try_into().expect("len 8"));
-                    let last = u64::from_le_bytes(payload[8..16].try_into().expect("len 8"));
+                    let first = u64::from_le_bytes([
+                        payload[0], payload[1], payload[2], payload[3], payload[4], payload[5],
+                        payload[6], payload[7],
+                    ]);
+                    let last = u64::from_le_bytes([
+                        payload[8],
+                        payload[9],
+                        payload[10],
+                        payload[11],
+                        payload[12],
+                        payload[13],
+                        payload[14],
+                        payload[15],
+                    ]);
                     let mut b = open.remove(&txn_id).ok_or(JournalError::OrphanCommit {
                         segment: seg,
                         txn_id,
