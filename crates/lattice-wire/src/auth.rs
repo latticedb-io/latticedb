@@ -22,6 +22,9 @@ pub enum AuthMethod {
 }
 
 impl AuthMethod {
+    /// Parse a method name from the policy TOML (not std FromStr — the
+    /// Option return distinguishes unknown names).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "scram_sha_256" => Self::ScramSha256,
