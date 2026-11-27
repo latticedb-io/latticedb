@@ -1,0 +1,56 @@
+# Profile `laptop` — developer workstation with local agents. v1.
+[network]
+max_frame_bytes = 8388608
+credit_frames = 64
+credit_bytes = 16777216
+keepalive_interval_ms = 30000
+keepalive_misses = 3
+resume_ttl_s = 300
+cursor_idle_ttl_s = 60
+session_cap_per_subject = 32
+listen_backlog = 256
+
+[auth]
+policy_table_path = "policies.toml"
+verifier_path = "secrets.toml"
+failure_cooldown_ms = 10000
+identity_map_path = "identity.toml"
+
+[engine]
+worklist_batch_depth = 1024
+timer_wheel_tick_ms = 5
+stall_grace_ms = 1000
+propagation_queue_cap = 16384
+
+[storage]
+group_commit_window_ms = 2
+sync_method = "fdatasync"
+crc_block_bytes = 65536
+part_target_bytes = 134217728
+merge_max_parts = 12
+merge_staging_bytes = 1073741824
+arena_structure_bytes = 134217728
+arena_parts_bytes = 1073741824
+arena_sessions_bytes = 33554432
+
+[resources]
+worker_threads = 8
+sequencer_queue_depth = 4096
+merge_pool_threads = 2
+
+[resources.memory_budget_shares]
+structure = 1
+parts = 8
+sessions = 1
+
+[resources.allocator]
+backend = "mimalloc"
+purge_delay_ms = 1000
+allow_thp = "off"
+huge_pages_gib = 0
+eager_commit = false
+
+[observability]
+metrics_interval_ms = 1000
+log_level = "info"
+slow_cursor_trace_ms = 250

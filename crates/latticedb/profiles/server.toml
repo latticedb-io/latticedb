@@ -1,0 +1,56 @@
+# Profile `server` — production host behind a pooler. v1.
+[network]
+max_frame_bytes = 16777216
+credit_frames = 64
+credit_bytes = 67108864
+keepalive_interval_ms = 30000
+keepalive_misses = 3
+resume_ttl_s = 300
+cursor_idle_ttl_s = 60
+session_cap_per_subject = 256
+listen_backlog = 4096
+
+[auth]
+policy_table_path = "policies.toml"
+verifier_path = "secrets.toml"
+failure_cooldown_ms = 10000
+identity_map_path = "identity.toml"
+
+[engine]
+worklist_batch_depth = 4096
+timer_wheel_tick_ms = 1
+stall_grace_ms = 500
+propagation_queue_cap = 65536
+
+[storage]
+group_commit_window_ms = 1
+sync_method = "fdatasync"
+crc_block_bytes = 65536
+part_target_bytes = 2147483648
+merge_max_parts = 16
+merge_staging_bytes = 34359738368
+arena_structure_bytes = 1073741824
+arena_parts_bytes = 17179869184
+arena_sessions_bytes = 268435456
+
+[resources]
+worker_threads = 32
+sequencer_queue_depth = 65536
+merge_pool_threads = 4
+
+[resources.memory_budget_shares]
+structure = 1
+parts = 16
+sessions = 1
+
+[resources.allocator]
+backend = "mimalloc"
+purge_delay_ms = 1000
+allow_thp = "on"
+huge_pages_gib = 0
+eager_commit = true
+
+[observability]
+metrics_interval_ms = 1000
+log_level = "warn"
+slow_cursor_trace_ms = 500

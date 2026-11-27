@@ -1,0 +1,56 @@
+# Profile `dev` — single laptop, fast inner loop. v1 (PROFILE_VERSION in code).
+[network]
+max_frame_bytes = 1048576
+credit_frames = 16
+credit_bytes = 4194304
+keepalive_interval_ms = 10000
+keepalive_misses = 3
+resume_ttl_s = 60
+cursor_idle_ttl_s = 30
+session_cap_per_subject = 8
+listen_backlog = 64
+
+[auth]
+policy_table_path = "policies.toml"
+verifier_path = "secrets.toml"
+failure_cooldown_ms = 5000
+identity_map_path = "identity.toml"
+
+[engine]
+worklist_batch_depth = 256
+timer_wheel_tick_ms = 10
+stall_grace_ms = 1000
+propagation_queue_cap = 4096
+
+[storage]
+group_commit_window_ms = 5
+sync_method = "fdatasync"
+crc_block_bytes = 65536
+part_target_bytes = 16777216
+merge_max_parts = 8
+merge_staging_bytes = 134217728
+arena_structure_bytes = 33554432
+arena_parts_bytes = 134217728
+arena_sessions_bytes = 8388608
+
+[resources]
+worker_threads = 2
+sequencer_queue_depth = 128
+merge_pool_threads = 1
+
+[resources.memory_budget_shares]
+structure = 1
+parts = 4
+sessions = 1
+
+[resources.allocator]
+backend = "mimalloc"
+purge_delay_ms = 1000
+allow_thp = "off"
+huge_pages_gib = 0
+eager_commit = false
+
+[observability]
+metrics_interval_ms = 1000
+log_level = "info"
+slow_cursor_trace_ms = 100

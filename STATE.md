@@ -8,7 +8,12 @@ Contract frozen AND all pre-implementation architecture decisions closed (2026-1
 execution model (thread pools, one process, no edge IPC), wire runtime (tokio in
 wire/admin only — SPEC-02 §12.8), allocator (mimalloc — §12.9), journal I/O boundary
 (fdatasync at group commit — SPEC-03 §9.8), Q10 auth v1 confirmed (MANIFEST §9).
-**T-000 implemented, local acceptance green, awaiting Supervisor review; T-001 next.**
+**T-000 + T-001 implemented, local acceptance green.** Supervisor deferred to the V1
+gate (owner decision 2026-11-27): tasks sit in `review` until then; no mid-stream stops
+unless an agent hits iteration-cycling (owner protocol: stop → describe → line-by-line
+investigation → propose → apply). CI live on GitHub Actions (checkout@v5, green).
+Trunk-based: main only; tags per AGENTS.md rule 9 (`t000-skeleton` pushed;
+`m0-bootstrap` when T-001 signs off).
 
 ## Done (in order)
 
@@ -42,15 +47,23 @@ wire/admin only — SPEC-02 §12.8), allocator (mimalloc — §12.9), journal I/
 
 ## Next (in order)
 
-1. **Supervisor review of T-000** (status: review) → then T-000 done. Tag `t000-skeleton`
-   already at the T-000 commit; Supervisor review range = `bccfb69..t000-skeleton`.
-2. **T-001**: config subsystem — TOML (serde+toml crate), strict validation
-   (deny_unknown_fields), profiles dev/laptop/server/analytics, autodetect skeleton,
-   `resources.allocator.*` mapping (SPEC-02 §12.9), policy-table file format shared
-   (SPEC-02 §10, §12.4). Acceptance: WPT-10.3–10.6 as real functional tests.
-   T-001 done + Supervisor sign-off ⇒ **tag `m0-bootstrap`** (AGENTS.md rule 9 — never
-   skip milestone tags).
-3. Then M1 chain per TASKS.md (T-101…T-112), tasks land in `review` for Supervisor.
+1. **T-001 done** (2026-11-27, review): config tree (6 groups, 40 parameters,
+   deny-unknown-fields + key/section error annotation), safety clamps (startup errors,
+   never silent), 4 profiles (dev/laptop/server/analytics, embedded TOML, v1),
+   `plan_reload` hot/restart classes (8 hot / 32 restart, completeness-tested),
+   autodetect (HostSpecs → deterministic TOML; Host probes CPU/RAM, Hdd conservative
+   until M4 disk probing). Tests: `crates/latticedb/tests/config_wpt10.rs` — 6 fns
+   covering WPT-10.3 (legal extremes round-trip, config level), 10.4 (byte-identical
+   autodetect), 10.5 (strict validation naming key+section), 10.6 (hot/restart
+   classes + 40-param anti-drift completeness). WPT-10.3/10.6 wire-level variants
+   land in M3 (noted in test docs).
+2. **T-101** (M1 chain start): `lattice-core` — identifiers, epochs, node-id spaces,
+   SoA/CSR arrays, cell types (scalars, records + presence bitmask). Acceptance: cell
+   round-trip tests; array invariants (SPEC-01 §3/§5, ARCH §4). Config consumption
+   wiring (arena budgets etc.) follows per-task.
+3. M1 continues per TASKS.md (T-102…T-112). Tag `m0-bootstrap` remains planned at the
+   V1-gate sign-off (owner deferred Supervisor to end of V1; do not tag milestones
+   early).
 
 ## DoD reminder (per AGENTS.md)
 
