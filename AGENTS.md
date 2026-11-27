@@ -54,6 +54,18 @@ decision log or MANIFEST §10) approved by the architect pair. **No silent spec 
    (e.g. `t000-skeleton`). Tags are never skipped or retro-batched — the Supervisor uses
    them as review ranges (`git diff <prev-tag>..<tag>`).
 
+## Rust rules (owner-mandated)
+
+1. **Zero `unwrap()` / `expect()` outside tests.** Errors are values: every
+   fallible operation returns `Result` with its module's error type.
+2. **Error structs per trait/module.** Every trait declares a dedicated
+   error type (`type Err` / `*Error` struct) and every fallible method is
+   bound to it; every module exposes its own typed error enum implementing
+   `Display + std::error::Error`; composition goes through `From`.
+3. **Explicit exception processing.** No silent fallbacks: errors are
+   propagated (`?`), mapped with context, or asserted as documented
+   invariants (`assert!`/`debug_assert!`) — never swallowed, never defaulted.
+
 ## Non-goals (do not build)
 
 No SQL, no query planner, no general OLAP engine, no JSON type, no document store, no
