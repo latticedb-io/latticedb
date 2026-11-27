@@ -25,25 +25,25 @@
 
 | ID | Task | Spec refs | Acceptance | Deps | Status |
 |---|---|---|---|---|---|
-| T-000 | Repo skeleton: workspace per ARCHITECTURE §3, CI (fmt/clippy/test), toolchain files | ARCH §3 | CI green on empty crates | — | review (Supervisor) |
+| T-000 | Repo skeleton: workspace per ARCHITECTURE §3, CI (fmt/clippy/test), toolchain files | ARCH §3 | CI green on empty crates | — | done (m0-bootstrap) |
 | T-001 | Config subsystem: TOML parse, strict validation, profiles, autodetect skeleton | SPEC-02 §10 | WPT-10.3–10.6 | T-000 | review (Supervisor, deferred to V1 gate) |
 
 ## M1 — graph core + storage + schema graph
 
-| ID | Task | Spec refs | Acceptance | Deps |
-|---|---|---|---|---|
-| T-101 | `lattice-core`: identifiers, epochs, node-id spaces, SoA/CSR arrays, cell types (scalars, records + presence bitmask) | ARCH §4; SPEC-01 §3, §5 | cell round-trip tests; array invariants | T-001 |
-| T-102 | `lattice-schema` entities: full catalog inventory, key grammar | SPEC-01 §2–§15 | SGT-2.1–2.3 | T-101 |
-| T-103 | Schema compiler: masks, read-sets, enabled-action index | ARCH §7; SPEC-01 §7, §9 | compile/recompile identity tests | T-102 |
-| T-104 | Schema transactions: op registry, R13, dry-run | SPEC-01 §16 | SGT-16.1–16.3 | T-103 |
-| T-105 | Journal: segments, framing, LSN, rotation, torn tail | SPEC-03 §6 | SFT-6.1–6.4 | T-101 |
-| T-106 | Snapshot: header/arrays/catalog blob/footer, CRC | SPEC-03 §3 | SFT-3.1–3.3 | T-105 |
-| T-107 | Parts: format, run directory, presence, zone maps | SPEC-03 §4 | SFT-4.1, 4.3, 4.4 | T-101, T-108 |
-| T-108 | Codec registry + chains + determinism | SPEC-03 §5 | SFT-5.1–5.3 | T-101 |
-| T-109 | MANIFEST swap + GC | SPEC-03 §2 | SFT-2.1–2.2 | T-106 |
-| T-110 | Scalar-as-column (k=0) + LSN overwrite resolution | SPEC-03 §4.1/§9.1 | SFT-4.2 | T-107 |
-| T-111 | M1 CLI smoke: create → write → restart → replay verify | ARCH §13 M1 | SFT-1.1 (seed mode); exit criteria met | T-104, T-106–T-110 |
-| T-112 | Template bundle installer + 3 bundles v0 | SPEC-01 §17 | SGT-17.1–17.3 | T-104 |
+| ID | Task | Spec refs | Acceptance | Deps | Status |
+|---|---|---|---|---|---|
+| T-101 | `lattice-core`: identifiers, epochs, node-id spaces, SoA/CSR arrays, cell types (scalars, records + presence bitmask) | ARCH §4; SPEC-01 §3, §5 | cell round-trip tests; array invariants | T-001 | done (m1-graph-core) |
+| T-102 | `lattice-schema` entities: full catalog inventory, key grammar | SPEC-01 §2–§15 | SGT-2.1–2.3 | T-101 | done (m1-graph-core) |
+| T-103 | Schema compiler: masks, read-sets, enabled-action index, ranks | ARCH §7; SPEC-01 §7, §9 | compile/recompile identity tests | T-102 | done (m1-graph-core) |
+| T-104 | Schema transactions: op registry, R13, dry-run | SPEC-01 §16 | SGT-16.1–16.3 | T-103 | done (m1-graph-core) |
+| T-105 | Journal: segments, framing, LSN, rotation, torn tail | SPEC-03 §6 | SFT-6.1–6.4 | T-101 | done (m1-graph-core) |
+| T-106 | Snapshot: header/arrays/catalog blob/footer, CRC | SPEC-03 §3 | SFT-3.1–3.3 | T-105 | done (m1-graph-core) |
+| T-107 | Parts: format, run directory, presence, zone maps | SPEC-03 §4 | SFT-4.1, 4.3, 4.4 | T-101, T-108 | done (m1-graph-core) |
+| T-108 | Codec registry + chains + determinism | SPEC-03 §5 | SFT-5.1–5.3 | T-101 | done (m1-graph-core) |
+| T-109 | MANIFEST swap + GC + archive retention | SPEC-03 §2 | SFT-2.1–2.2, 6.3 | T-106 | done (m1-graph-core) |
+| T-110 | Scalar-as-column (k=0) + LSN overwrite resolution | SPEC-03 §4.1/§9.1 | SFT-4.2 | T-107 | done (m1-graph-core) |
+| T-111 | M1 CLI smoke: create → write → restart → replay verify | ARCH §13 M1 | SFT-1.1 (seed mode); exit criteria met | T-104, T-106–T-110 | done (m1-graph-core) |
+| T-112 | Template bundle installer + 3 bundles v0 | SPEC-01 §17 | SGT-17.1–17.3 | T-104 | done (m1-graph-core) |
 
 ## M2 — semantics engine
 

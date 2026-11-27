@@ -4,16 +4,14 @@
 
 ## Where we are
 
-Contract frozen AND all pre-implementation architecture decisions closed (2026-11-27):
-execution model (thread pools, one process, no edge IPC), wire runtime (tokio in
-wire/admin only — SPEC-02 §12.8), allocator (mimalloc — §12.9), journal I/O boundary
-(fdatasync at group commit — SPEC-03 §9.8), Q10 auth v1 confirmed (MANIFEST §9).
-**T-000 + T-001 implemented, local acceptance green.** Supervisor deferred to the V1
-gate (owner decision 2026-11-27): tasks sit in `review` until then; no mid-stream stops
-unless an agent hits iteration-cycling (owner protocol: stop → describe → line-by-line
-investigation → propose → apply). CI live on GitHub Actions (checkout@v5, green).
-Trunk-based: main only; tags per AGENTS.md rule 9 (`t000-skeleton` pushed;
-`m0-bootstrap` when T-001 signs off).
+**M0 + M1 COMPLETE** (tag `m1-graph-core`, 2026-11-27). 36 green test targets
+across the workspace; fmt/clippy `-D warnings` clean; production code carries
+zero unwrap/expect (owner Rust rules, AGENTS.md). Supervisor review deferred
+to the V1 gate (owner decision); tasks sit `done (m<N> tag)` in TASKS.md.
+Trunk-based: main only; tags per AGENTS.md rule 9. Next milestone: **M2 —
+semantics engine** (T-201..T-209: FSM registry, transition dispatch, dependency
+algebra, worklist, timer wheel, stall detector, validator suite R1–R13,
+determinism oracle seed).
 
 ## Done (in order)
 
@@ -24,7 +22,15 @@ Trunk-based: main only; tags per AGENTS.md rule 9 (`t000-skeleton` pushed;
    column added (M0 table first).
 3. AGENTS.md (this repo) — binding agent rules. BACKLOG.md live (BL-01 replication seam).
 4. Brand/infra settled (see MANIFEST §9 Q12; crates.io claim at M1).
-5. 2026-11-27: git repo live, pushed to `github.com/latticedb-io/latticedb` (SSH remote);
+5. 2026-11-27: M1 delivered — T-101 core (ids/arrays/cells + Value::Record +
+  core value codec), T-102 catalog+grammar, T-103 compiler (ranks, masks,
+  read-sets, action index), T-104 schema txns (R13, txn-level compile gate),
+  T-105 journal (CRC32C, LSN, torn tail), T-106 snapshot (scoped CRCs, op-log
+  blob), T-107+T-110 parts (zone maps, presence, LSN merge), T-108 codecs
+  (Gorilla/delta-of-delta/varints; zstd feature-gated), T-109 MANIFEST+GC+retention,
+  T-112 bundles (3 v0, idempotent), T-111 CLI smoke (`--smoke <dir>`, byte-identity
+  + restart verify). Tags: `t000-skeleton`, `m0-bootstrap`, `m1-graph-core`.
+  Earlier: git repo live, pushed to `github.com/latticedb-io/latticedb` (SSH remote);
    README.md; four pre-implementation DECs researched + frozen; **T-000** — workspace
    skeleton (12 packages per ARCH §3: 10 crates + latticedb-cli + latticedb-tests),
    CI workflow (fmt/clippy/test, GitHub Actions), rust-toolchain.toml (stable +
