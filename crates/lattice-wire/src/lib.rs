@@ -6,6 +6,9 @@
 //! §12.8); kernel crates are async-runtime-free and receive commands via
 //! bounded queues at the sequencing point (ARCHITECTURE §8 execution model).
 
+pub mod auth;
+pub mod crypto;
 pub mod frame;
 pub mod handshake;
+pub mod scram;
 pub mod tlv;
