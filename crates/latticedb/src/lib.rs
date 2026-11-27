@@ -5,3 +5,4 @@
 
 pub mod bundles;
 pub mod config;
+pub mod smoke;

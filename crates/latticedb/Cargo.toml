@@ -18,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 
 [dev-dependencies]
+lattice-storage = { path = "../lattice-storage" }
 toml = "0.9"
 
 [lints]

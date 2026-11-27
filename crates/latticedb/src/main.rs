@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use latticedb::config::autodetect::{DiskClass, HostSpecs, autodetect};
 use latticedb::config::parse_config;
+use latticedb::smoke;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -41,9 +42,22 @@ fn main() -> ExitCode {
                 }
             }
         }
+        ["--smoke", dir] => match smoke::run(dir) {
+            Ok(summary) => {
+                println!(
+                    "smoke OK: snapshot {} bytes, part {} bytes, last_lsn {} — two databases byte-identical, restart verified",
+                    summary.snapshot_len, summary.part_len, summary.last_lsn
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("smoke FAILED: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             println!(
-                "latticedb {} — usage:\n  latticedb --config <path.toml>   validate a host config\n  latticedb --autodetect            print a tuned config for this host",
+                "latticedb {} — usage:\n  latticedb --config <path.toml>   validate a host config\n  latticedb --autodetect            print a tuned config for this host\n  latticedb --smoke <dir>           run the M1 exit-criteria workload twice and verify",
                 env!("CARGO_PKG_VERSION")
             );
             ExitCode::SUCCESS

@@ -20,7 +20,6 @@
 //!   re-indexes; SPEC-01 §4 + SPEC-03 codec dict).
 
 use crate::catalog::Catalog;
-use crate::compile::compile;
 use crate::entities::*;
 use crate::key::Key;
 use lattice_core::value::Value;
