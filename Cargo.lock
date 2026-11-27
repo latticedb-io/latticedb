@@ -129,6 +129,7 @@ name = "lattice-validate"
 version = "0.1.0"
 dependencies = [
  "lattice-core",
+ "lattice-engine",
  "lattice-schema",
 ]
 

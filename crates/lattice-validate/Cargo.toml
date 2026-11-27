@@ -11,3 +11,6 @@ lattice-schema = { path = "../lattice-schema" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+lattice-engine = { path = "../lattice-engine" }
