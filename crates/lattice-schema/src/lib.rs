@@ -4,5 +4,6 @@
 //! live here (SPEC-01 §16).
 
 pub mod catalog;
+pub mod compile;
 pub mod entities;
 pub mod key;

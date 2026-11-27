@@ -5,5 +5,6 @@
 //! library mode pure and the determinism fuzz fast.
 
 pub mod arrays;
+pub mod bitset;
 pub mod ids;
 pub mod value;

@@ -81,6 +81,16 @@ pub enum SchemaError {
         set: Key,
         attr: Key,
     },
+    /// Cycle in a finalizing model's transition graph (SPEC-01 §8: only
+    /// endless models may cycle).
+    FinalizingCycle {
+        model: Key,
+    },
+    /// Finalizing state not reachable from `initial` (rank undefined).
+    UnreachableState {
+        model: Key,
+        state: Key,
+    },
 }
 
 impl fmt::Display for SchemaError {
@@ -151,6 +161,16 @@ impl fmt::Display for SchemaError {
                 write!(
                     f,
                     "attribute set `{set}` references unknown attribute `{attr}`"
+                )
+            }
+            SchemaError::FinalizingCycle { model } => write!(
+                f,
+                "model `{model}`: finalizing transition graph must be a DAG — cycles are legal only in endless models"
+            ),
+            SchemaError::UnreachableState { model, state } => {
+                write!(
+                    f,
+                    "model `{model}`: state `{state}` is not reachable from the initial state"
                 )
             }
         }
