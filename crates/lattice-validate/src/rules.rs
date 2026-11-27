@@ -131,13 +131,13 @@ impl Validators {
                 format!("value type mismatch for attribute `{attr_key}`"),
             ));
         }
-        if let Value::NodeRef(target) = value {
-            if !arrays.is_alive(*target) {
-                return Err(Violation::new(
-                    "R6",
-                    format!("node_ref target {target} does not exist (or is deleted)"),
-                ));
-            }
+        if let Value::NodeRef(target) = value
+            && !arrays.is_alive(*target)
+        {
+            return Err(Violation::new(
+                "R6",
+                format!("node_ref target {target} does not exist (or is deleted)"),
+            ));
         }
         Ok(())
     }

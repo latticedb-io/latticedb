@@ -7,7 +7,6 @@
 use lattice_core::arrays::GraphArrays;
 use lattice_core::ids::{NodeId, NodeIdSpace};
 use lattice_core::value::{Decimal, Value};
-use lattice_engine::fsm::EngineError;
 use lattice_schema::catalog::Catalog;
 use lattice_schema::key::Key;
 use lattice_schema::txn::{SchemaOp, SchemaState};
