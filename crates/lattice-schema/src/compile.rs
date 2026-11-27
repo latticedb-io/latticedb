@@ -24,6 +24,20 @@ use lattice_core::bitset::BitSet;
 use lattice_core::ids::AttrId;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Per-model runtime view (SPEC-01 §8): class, states with terminals,
+/// initial, ranks (finalizing only), and the declared motion table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledModel {
+    pub class: ModelClass,
+    /// (state key, success_terminal, failure_terminal) in declaration order.
+    pub states: Vec<(Key, bool, bool)>,
+    pub initial: Key,
+    /// Finalizing only: state → longest-path depth from initial.
+    pub ranks: BTreeMap<Key, u64>,
+    /// Declared motions: (from, to) → transition keys.
+    pub motions: BTreeMap<(Key, Key), Vec<Key>>,
+}
+
 /// Compiled dispatch structures for one schema epoch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Compiled {
@@ -49,6 +63,8 @@ pub struct Compiled {
     pub ranks: BTreeMap<(Key, Key), u64>,
     /// Resolved index definitions (rebuild plans for T-107).
     pub index_plans: BTreeMap<Key, IndexKind>,
+    /// Runtime FSM view per state model (T-201 registry input).
+    pub models: BTreeMap<Key, CompiledModel>,
 }
 
 /// Compile the full catalog for its current epoch.
@@ -509,6 +525,39 @@ pub fn compile(catalog: &Catalog) -> Result<Compiled, SchemaError> {
         .map(|(k, i)| (k.clone(), i.kind.clone()))
         .collect();
 
+    // -- I: runtime FSM view (T-201) ----------------------------------------
+    let mut models: BTreeMap<Key, CompiledModel> = BTreeMap::new();
+    for (mkey, model) in &catalog.state_models {
+        let mut motions: BTreeMap<(Key, Key), Vec<Key>> = BTreeMap::new();
+        for (tk, t) in &catalog.transitions {
+            if &t.model == mkey {
+                motions
+                    .entry((t.from.clone(), t.to.clone()))
+                    .or_default()
+                    .push(tk.clone());
+            }
+        }
+        let model_ranks: BTreeMap<Key, u64> = ranks
+            .iter()
+            .filter(|((m, _), _)| m == mkey)
+            .map(|((_, s), r)| (s.clone(), *r))
+            .collect();
+        models.insert(
+            mkey.clone(),
+            CompiledModel {
+                class: model.class,
+                states: model
+                    .states
+                    .iter()
+                    .map(|s| (s.key.clone(), s.success_terminal, s.failure_terminal))
+                    .collect(),
+                initial: model.initial.clone(),
+                ranks: model_ranks,
+                motions,
+            },
+        );
+    }
+
     Ok(Compiled {
         epoch: catalog.schema_epoch,
         attr_ids,
@@ -520,6 +569,7 @@ pub fn compile(catalog: &Catalog) -> Result<Compiled, SchemaError> {
         rule_attrs,
         ranks,
         index_plans,
+        models,
     })
 }
 
