@@ -31,6 +31,34 @@ Any v2 replication design starts from this seam; no V1 work is authorized.
 
 ---
 
+## Spec questions (owner decisions pending — no silent drift)
+
+**SQ-01 · RemoveAttribute op missing from the §16 registry · found T-209 ·
+owner decision required.** SPEC-01 §16's closed op registry (28 ops) has
+RemoveEnumValue / RemoveRecordField / RemoveState / RemoveRule — but NO
+RemoveAttribute (and no DeprecateAttribute). Yet the R13 text explicitly
+contemplates "remove attribute referenced by any rule/transition/index/set" as
+a rejection reason, which presupposes an attribute-removal path. Current v1
+behavior: attributes are eternal (created, codec-altered, never removed) —
+consistent with P11 compactness but in tension with the R13 text. Options:
+(a) add DeprecateAttribute + RemoveAttribute ops (full lifecycle symmetry);
+(b) declare attributes eternal in §16 and reword R13; (c) defer to v2.
+Owner call required; any choice = DEC entry.
+
+**SQ-02 · No AlterNodeType / SetAttach op — set-list evolution requires type
+replacement · found T-209 · owner decision required.** The §16 registry has
+CreateNodeType + DeprecateNodeType but no op to alter a live type's
+attribute_sets (attach a new set to an existing type). SPEC-01 §7's active
+meta-schema promise ("tenant mutates the catalog whenever needed") currently
+forces the deprecate → drain → create-replacement cycle for what should be an
+additive change (SPEC-01 §16: "additive ops are free"). Options: (a) add
+AlterNodeType {type_key, add_sets, remove_sets} with R13 reference counting;
+(b) keep type replacement as the only path and document the migration pattern.
+Affects SGT-17.4 ergonomics directly.
+
+
+---
+
 ## Engineering debt register (tracked deferrals from M0/M1 implementation)
 
 > Format: `ED-NN · item · origin · target gate`. Each item must be resolved or

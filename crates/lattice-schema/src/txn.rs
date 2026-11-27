@@ -169,9 +169,11 @@ impl std::error::Error for TxnError {}
 pub struct SchemaState {
     pub catalog: Catalog,
     pub deprecations: Deprecations,
-    /// Committed op history in commit order — the catalog blob's source
-    /// (SPEC-03 §3 op-log equivalent) and the journal SCHEMA_TXN payload.
-    pub ops_log: Vec<SchemaOp>,
+    /// Committed txn history in commit order — the catalog blob's source
+    /// (SPEC-03 §3 op-log equivalent) and the journal SCHEMA_TXN payloads.
+    /// GROUPED per txn: replay must bump epochs per txn, not per op (the
+    /// journal records one SchemaTxn per committed txn).
+    pub ops_log: Vec<Vec<SchemaOp>>,
 }
 
 impl SchemaState {
@@ -198,7 +200,7 @@ impl SchemaState {
             return Err(TxnError { outcomes });
         }
         let epoch = scratch.catalog.schema_epoch;
-        scratch.ops_log.extend(ops.iter().cloned());
+        scratch.ops_log.push(ops.clone());
         *self = scratch;
         Ok(epoch)
     }

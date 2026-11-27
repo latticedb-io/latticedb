@@ -87,7 +87,7 @@ fn fixture() -> (SchemaState, GraphArrays) {
 fn snapshot_roundtrip_is_exact() {
     let dir = tmpdir("roundtrip");
     let (st, arrays) = fixture();
-    let ops = encode_ops(&st.ops_log);
+    let ops = encode_ops(&st.ops_log.concat());
     let deps = encode_deprecations(&st.deprecations);
     let payload = encode_snapshot(42, st.catalog.schema_epoch, 77, &arrays, &ops, &deps);
     write_snapshot(&dir.join("snapshot.v1"), &payload).expect("write");
@@ -107,7 +107,7 @@ fn snapshot_roundtrip_is_exact() {
 
     // Catalog identity: replay the op-log into a fresh state and compare.
     let decoded = decode_ops(&snap.catalog_ops).expect("ops decode");
-    assert_eq!(decoded, st.ops_log, "op-log round-trips in order");
+    assert_eq!(decoded, st.ops_log.concat(), "op-log round-trips in order");
     let (replayed, _) = replay_ops(&decoded).expect("replay");
     // Epoch granularity: this slice replays the whole op-log as one batch,
     // so the replayed epoch is 1 while the fixture committed 4 txns. The
@@ -137,7 +137,7 @@ fn snapshot_roundtrip_is_exact() {
 fn sft_3_2_catalog_blob_self_heal() {
     let dir = tmpdir("catalog-corrupt");
     let (st, arrays) = fixture();
-    let ops = encode_ops(&st.ops_log);
+    let ops = encode_ops(&st.ops_log.concat());
     let deps = encode_deprecations(&st.deprecations);
     let payload = encode_snapshot(1, st.catalog.schema_epoch, 1, &arrays, &ops, &deps);
     let path = dir.join("snapshot.v1");
@@ -175,7 +175,7 @@ fn sft_3_2_catalog_blob_self_heal() {
 fn sft_3_3_structure_corruption_is_fatal() {
     let dir = tmpdir("structure-corrupt");
     let (st, arrays) = fixture();
-    let ops = encode_ops(&st.ops_log);
+    let ops = encode_ops(&st.ops_log.concat());
     let deps = encode_deprecations(&st.deprecations);
     let payload = encode_snapshot(1, st.catalog.schema_epoch, 1, &arrays, &ops, &deps);
 

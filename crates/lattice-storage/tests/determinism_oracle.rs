@@ -198,12 +198,15 @@ fn sft_1_3_merge_determinism() {
     assert_eq!(m1.bytes, m2.bytes, "D3: same inputs ⇒ same output bytes");
 }
 
+/// Journal replay summary: (txn_id, last_lsn, record_count) per txn.
+type TxnSummary = Vec<(u64, u64, usize)>;
+
 /// SFT-1.1 (seed form): seeded random workload → two fresh databases with
 /// byte-identical snapshot + parts; the randomized journal replays to
 /// identical txn sequences on 3 fresh directory copies.
 #[test]
 fn sft_1_1_seeded_replay_identity() {
-    let run = |dir: &Path| -> (Vec<u8>, Vec<u8>, Vec<(u64, u64, usize)>) {
+    let run = |dir: &Path| -> (Vec<u8>, Vec<u8>, TxnSummary) {
         let mut rng = Rng::new(0xF00D_5EED);
         fs::create_dir_all(dir.join("journal")).expect("journal dir");
         fs::create_dir_all(dir.join("parts")).expect("parts dir");
@@ -221,7 +224,7 @@ fn sft_1_1_seeded_replay_identity() {
             .append(
                 1,
                 RecordKind::SchemaTxn,
-                &lattice_schema::opslog::encode_ops(&schema.ops_log),
+                &lattice_schema::opslog::encode_ops(&schema.ops_log.concat()),
             )
             .expect("schema txn");
         journal.commit_txn(1).expect("commit");
@@ -312,7 +315,7 @@ fn sft_1_1_seeded_replay_identity() {
             schema.catalog.schema_epoch,
             last_lsn,
             &arrays,
-            &lattice_schema::opslog::encode_ops(&schema.ops_log),
+            &lattice_schema::opslog::encode_ops(&schema.ops_log.concat()),
             &lattice_schema::opslog::encode_deprecations(&schema.deprecations),
         );
         lattice_storage::snapshot::write_snapshot(&dir.join("snapshot.v1"), &snapshot)

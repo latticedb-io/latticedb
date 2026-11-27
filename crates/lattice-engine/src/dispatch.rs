@@ -800,6 +800,29 @@ impl Machine {
         &self.compiled
     }
 
+    /// Rebuild against a NEW compiled epoch, preserving live runtime state
+    /// (arrays, cells, journal time, timers, guard params). This is the
+    /// per-epoch recompile path (ARCHITECTURE §7): the machine is
+    /// reconstructed, live facts ride across untouched.
+    pub fn recompile(mut self, compiled: Compiled, catalog: &Catalog) -> Self {
+        let arrays = std::mem::replace(
+            &mut self.arrays,
+            GraphArrays::new(lattice_core::ids::NodeIdSpace::new()),
+        );
+        let cells = std::mem::take(&mut self.cells);
+        let logical_us = self.logical_us;
+        let wheel = std::mem::take(&mut self.wheel);
+        let guard_params = std::mem::take(&mut self.guard_params);
+        let next_guard_param_id = self.next_guard_param_id;
+        let mut machine = Machine::new(arrays, compiled, catalog);
+        machine.cells = cells;
+        machine.logical_us = logical_us;
+        machine.wheel = wheel;
+        machine.guard_params = guard_params;
+        machine.next_guard_param_id = next_guard_param_id;
+        machine
+    }
+
     /// A node's current state KEY (SoA u8 → model declaration order).
     pub fn state_key_of(&self, node: NodeId) -> Result<Key, DispatchError> {
         let type_code = self.arrays.type_of(node);

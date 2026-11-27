@@ -67,15 +67,37 @@ pub struct Compiled {
     pub models: BTreeMap<Key, CompiledModel>,
 }
 
-/// Compile the full catalog for its current epoch.
+/// Compile the full catalog for its current epoch — fresh lineage (first
+/// epoch, or epochs with no prior compiled state). See
+/// [`compile_with_lineage`] for the lineage-stable form.
 pub fn compile(catalog: &Catalog) -> Result<Compiled, SchemaError> {
-    // -- A: deterministic attribute-id assignment ---------------------------
-    let attr_ids: BTreeMap<Key, AttrId> = catalog
-        .attributes
-        .keys()
-        .enumerate()
-        .map(|(i, k)| (k.clone(), AttrId(i as u16)))
-        .collect();
+    compile_with_lineage(catalog, None)
+}
+
+/// Compile with lineage-stable attr-id assignment (ARCHITECTURE §4):
+/// `prev_attr_ids` is the previous epoch's assignment — existing attributes
+/// keep their ids; new attributes get the next free id; removed attributes'
+/// ids are retired, never reused.
+pub fn compile_with_lineage(
+    catalog: &Catalog,
+    prev_attr_ids: Option<&BTreeMap<Key, AttrId>>,
+) -> Result<Compiled, SchemaError> {
+    // -- A: lineage-stable attribute-id assignment --------------------------
+    let mut next_id = prev_attr_ids
+        .map(|prev| prev.values().map(|a| a.0).max().map_or(0, |m| m + 1))
+        .unwrap_or(0);
+    let mut attr_ids: BTreeMap<Key, AttrId> = BTreeMap::new();
+    for k in catalog.attributes.keys() {
+        let id = match prev_attr_ids.and_then(|prev| prev.get(k)) {
+            Some(existing) => *existing,
+            None => {
+                let id = AttrId(next_id);
+                next_id += 1;
+                id
+            }
+        };
+        attr_ids.insert(k.clone(), id);
+    }
     let attr_count = catalog.attributes.len();
     let id_of = |k: &Key| -> Result<AttrId, SchemaError> {
         attr_ids

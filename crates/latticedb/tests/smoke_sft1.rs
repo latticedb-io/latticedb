@@ -43,7 +43,7 @@ fn run_workload(dir: &Path) -> (Vec<u8>, Vec<u8>, u64) {
     // 3. Journal: schema txn + structural facts + cell appends. Payloads
     //    carry the canonical value encoding (core value codec).
     let mut journal = JournalWriter::create(&dir.join("journal"), 1 << 20).expect("journal");
-    let schema_payload = lattice_schema::opslog::encode_ops(&schema.ops_log);
+    let schema_payload = lattice_schema::opslog::encode_ops(&schema.ops_log.concat());
     journal.begin_txn(1).expect("begin");
     journal
         .append(1, RecordKind::SchemaTxn, &schema_payload)
@@ -124,7 +124,7 @@ fn run_workload(dir: &Path) -> (Vec<u8>, Vec<u8>, u64) {
         schema.catalog.schema_epoch,
         journal.next_lsn() - 1,
         &arrays,
-        &lattice_schema::opslog::encode_ops(&schema.ops_log),
+        &lattice_schema::opslog::encode_ops(&schema.ops_log.concat()),
         &lattice_schema::opslog::encode_deprecations(&schema.deprecations),
     );
     write_snapshot(&dir.join("snapshot.v1"), &snapshot).expect("snapshot write");

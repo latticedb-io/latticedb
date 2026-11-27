@@ -53,7 +53,7 @@ fn workload(dir: &Path) -> Result<(Vec<u8>, Vec<u8>, u64), String> {
     arrays.assert_invariants();
 
     let mut journal = JournalWriter::create(&dir.join("journal"), 1 << 20).map_err(jstr)?;
-    let schema_payload = lattice_schema::opslog::encode_ops(&schema.ops_log);
+    let schema_payload = lattice_schema::opslog::encode_ops(&schema.ops_log.concat());
     journal.begin_txn(1).map_err(jstr)?;
     journal
         .append(1, RecordKind::SchemaTxn, &schema_payload)
@@ -130,7 +130,7 @@ fn workload(dir: &Path) -> Result<(Vec<u8>, Vec<u8>, u64), String> {
         schema.catalog.schema_epoch,
         journal.next_lsn() - 1,
         &arrays,
-        &lattice_schema::opslog::encode_ops(&schema.ops_log),
+        &lattice_schema::opslog::encode_ops(&schema.ops_log.concat()),
         &lattice_schema::opslog::encode_deprecations(&schema.deprecations),
     );
     write_snapshot(&dir.join("snapshot.v1"), &snapshot).map_err(jstr)?;
