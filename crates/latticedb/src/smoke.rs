@@ -152,17 +152,12 @@ fn workload(dir: &Path) -> Result<(Vec<u8>, Vec<u8>, u64), String> {
     Ok((snapshot, string_image.bytes, journal.next_lsn() - 1))
 }
 
-fn restart_verify(dir: &Path, last_lsn: u64) -> Result<(), String> {
+pub fn verify(dir: &Path) -> Result<u64, String> {
     let (manifest, tmps, _) = open_db_dir(dir, 0).map_err(|e| format!("open: {e}"))?;
     if tmps != 0 {
         return Err(format!("unexpected tmp files: {tmps}"));
     }
-    if manifest.created_lsn != last_lsn {
-        return Err(format!(
-            "manifest lsn {}: expected {}",
-            manifest.created_lsn, last_lsn
-        ));
-    }
+    let last_lsn = manifest.created_lsn;
     let snap = read_snapshot(&dir.join("snapshot.v1")).map_err(|e| format!("snapshot: {e}"))?;
     if !snap.catalog_valid {
         return Err("catalog blob invalid on a healthy database".into());
@@ -199,7 +194,7 @@ fn restart_verify(dir: &Path, last_lsn: u64) -> Result<(), String> {
     if reencoded != stored {
         return Err("snapshot re-encode diverges from stored bytes".into());
     }
-    Ok(())
+    Ok(last_lsn)
 }
 
 /// Run the full smoke: two fresh databases, byte-identity, restart verify.
@@ -220,7 +215,13 @@ pub fn run(base: &str) -> Result<SmokeSummary, String> {
     if lsn_a != lsn_b {
         return Err("LSN timelines diverge across identical workloads".into());
     }
-    restart_verify(&dir_a, lsn_a)?;
+    // Restart leg through the public, process-independent entry.
+    let verified_lsn = verify(&dir_a)?;
+    if verified_lsn != lsn_a {
+        return Err(format!(
+            "verified lsn {verified_lsn} != workload lsn {lsn_a}"
+        ));
+    }
     Ok(SmokeSummary {
         snapshot_len: snap_a.len(),
         part_len: part_a.len(),

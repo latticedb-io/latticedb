@@ -6,6 +6,7 @@
 //! `--autodetect` prints a tuned config set for this machine (SPEC-02 §10).
 
 use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
 use latticedb::config::autodetect::{DiskClass, HostSpecs, autodetect};
@@ -55,9 +56,22 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        ["--verify", dir] => match smoke::verify(Path::new(dir)) {
+            Ok(last_lsn) => {
+                println!(
+                    "verify OK: {dir} (last_lsn {last_lsn}) — manifest/snapshot/journal consistent"
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("verify FAILED: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             println!(
-                "latticedb {} — usage:\n  latticedb --config <path.toml>   validate a host config\n  latticedb --autodetect            print a tuned config for this host\n  latticedb --smoke <dir>           run the M1 exit-criteria workload twice and verify",
+                "latticedb {} — usage:\n  latticedb --config <path.toml>   validate a host config\n  latticedb --autodetect            print a tuned config for this host\n  latticedb --smoke <dir>           run the M1 exit-criteria workload twice and verify
+  latticedb --verify <dir>          re-open an existing database and verify consistency",
                 env!("CARGO_PKG_VERSION")
             );
             ExitCode::SUCCESS
