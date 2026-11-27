@@ -235,7 +235,8 @@ impl<S: CommandSink> Session<S> {
                 let id = frame
                     .payload
                     .get(..8)
-                    .map(|b| u64::from_le_bytes(b.try_into().expect("8")))
+                    .map(le_bytes)
+                    .map(u64::from_le_bytes)
                     .unwrap_or(0);
                 Ok(self.on_ping(id))
             }
@@ -359,18 +360,23 @@ fn is_write_command(ft: FrameType) -> bool {
 fn extract_request_id(payload: &[u8]) -> Option<u64> {
     let mut pos = 0usize;
     while pos + 6 <= payload.len() {
-        let tag = u16::from_le_bytes(payload[pos..pos + 2].try_into().expect("2"));
-        let len = u32::from_le_bytes(payload[pos + 2..pos + 6].try_into().expect("4")) as usize;
+        let tag = u16::from_le_bytes(le_bytes(&payload[pos..pos + 2]));
+        let len = u32::from_le_bytes(le_bytes(&payload[pos + 2..pos + 6])) as usize;
         pos += 6;
         if tag == 0x0001 {
             if len == 8 && pos + 8 <= payload.len() {
-                return Some(u64::from_le_bytes(
-                    payload[pos..pos + 8].try_into().expect("8"),
-                ));
+                return Some(u64::from_le_bytes(le_bytes(&payload[pos..pos + 8])));
             }
             return None;
         }
         pos += len;
     }
     None
+}
+
+/// Byte-array from a statically verified slice (loud on mismatch).
+fn le_bytes<const N: usize>(src: &[u8]) -> [u8; N] {
+    let mut out = [0u8; N];
+    out.copy_from_slice(src);
+    out
 }
