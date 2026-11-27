@@ -71,7 +71,7 @@
 | T-306 | Credit flow control | SPEC-02 §6 | WPT-6.1–6.2 | T-304 | done |
 | T-307 | Write commands + hint law | SPEC-02 §7 | WPT-7.1–7.5 | T-304, M2 | done |
 | T-308 | Reads, cursors, time travel | SPEC-02 §8 | WPT-8.1–8.5 | T-307 | done |
-| T-309 | Watches | SPEC-02 §9 | WPT-9.1–9.3 | T-305, T-308 |
+| T-309 | Watches | SPEC-02 §9 | WPT-9.1–9.3 | T-305, T-308 | done |
 | T-310 | Concurrent subtree-locked writers + sequencer | ARCH §8 | confluence under parallel load; WPT-5.1 parallel variant | T-307 |
 | T-311 | Kotlin SDK core (`sdk-kotlin` repo) | SPEC-02 (client side) | mirrors WPT-2–5 acceptance from JVM | T-301–T-305 |
 | T-312 | MCP gateway: 16 tools | SPEC-04 §3–§7 | MCT-3.1–3.3, 4.x, 5.x, 6.1–6.3, 7.1–7.2 | T-308–T-310 |
