@@ -78,3 +78,11 @@ T-104 · M2 (T-207 validator suite).** Schema-level R13 scans cover catalog refe
 cells, occupied states) is enforced by the engine's R6/R13 validators at sequencing —
 the two layers compose; the split is documented here so the M2 suite tests both.
 
+**ED-09 · zstd frame codec behind a cargo feature, default off in M1 · T-108 ·
+T-107/M5 performance gate.** Codec id 0x07 is registered and chain-parsing honors it
+(header-driven — SPEC-03 §5 "decoders MUST honor the header"); with the feature off,
+default chains ship frame=None (deterministic per build; part headers record the
+actual chain, so cross-build decode stays correct). Activate zstd at the parts task or
+M5 when the ratio/latency evidence demands; SFT-5.3's ratio bound is met by varint
+zig-zag delta-of-delta alone in the interim.
+

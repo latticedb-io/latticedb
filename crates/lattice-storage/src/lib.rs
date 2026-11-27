@@ -5,5 +5,6 @@
 //! Journal I/O boundary (SPEC-03 §9.8): buffered segment writes, sync per
 //! group-commit window (`fdatasync` — `File::sync_data`); reads via the OS.
 
+pub mod codecs;
 pub mod crc32c;
 pub mod journal;

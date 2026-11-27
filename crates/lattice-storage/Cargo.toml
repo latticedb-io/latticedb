@@ -7,6 +7,15 @@ repository.workspace = true
 
 [dependencies]
 lattice-core = { path = "../lattice-core" }
+zstd = { version = "0.13", optional = true }
+
+[features]
+# ED-09: zstd frame stage — registered (0x07) and header-honored; default off
+# in M1 until the parts task / M5 evidence demands activation.
+zstd = ["dep:zstd"]
+
+[dev-dependencies]
+toml = "0.9"
 
 [lints]
 workspace = true
