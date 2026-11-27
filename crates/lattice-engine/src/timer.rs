@@ -200,6 +200,11 @@ impl TimerWheel {
         }
     }
 
+    /// The fire_at timestamp for an armed timer (lag remaining math).
+    pub fn fire_at(&self, node: NodeId, transition: &Key) -> Option<u64> {
+        self.index.get(&(node.0, transition.clone())).copied()
+    }
+
     /// Is a deadline armed for (node, transition)?
     pub fn deadline_armed(&self, node: NodeId, transition: &Key) -> bool {
         matches!(

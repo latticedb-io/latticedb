@@ -3,6 +3,7 @@
 //! worklist propagation, timer wheel (the only clock — P8), stall detector.
 
 pub mod algebra;
+pub mod blockers;
 pub mod dispatch;
 pub mod fsm;
 pub mod propagation;

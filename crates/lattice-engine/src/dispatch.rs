@@ -21,6 +21,8 @@
 //! journal-time domain (P8: no wall clock) — the timer wheel (T-205)
 //! advances it; cell staleness (`epoch_gte`) reads it.
 
+use crate::algebra::{Kind, evaluate_incoming};
+use crate::blockers::{Blocker, BlockerSet};
 use crate::fsm::{EngineError, FsmRegistry};
 use lattice_core::arrays::GraphArrays;
 use lattice_core::ids::{AttrId, KeyIndex, Lsn, NodeId};
@@ -1047,8 +1049,8 @@ fn corrupt_state_code(model: Key, code: u8) -> DispatchError {
     ))
 }
 
-fn unreachable_key() -> Key {
-    panic!("both fallback keys must parse — programmer error")
+fn unreachable_key() -> ! {
+    panic!("neither fallback key parses — programmer error")
 }
 
 fn key_of_code(_code: u16) -> Key {
@@ -1102,3 +1104,185 @@ fn value_cmp(actual: &Value, op: &CmpOp, expected: &Value) -> bool {
 // silence: KeyIndex/Lsn used in cells API
 #[allow(unused)]
 fn _touches(k: KeyIndex, l: Lsn) {}
+
+impl Machine {
+    /// Compute the blocker set for one node: for each transition declared
+    /// from the node's current state (invokable actions + guard-armed
+    /// transitions), classify every reason it can't fire right now.
+    /// Empty set = quiescent node (at least one action ready).
+    pub fn blockers(&self, node: NodeId) -> Result<BlockerSet, DispatchError> {
+        if !self.arrays.is_alive(node) {
+            return Err(DispatchError::UnknownNodeType {
+                key: Key::parse("unknown").unwrap_or_else(|_| unreachable_key()),
+            });
+        }
+        let type_code = self.arrays.type_of(node);
+        let ntk = self
+            .node_type_key(type_code)
+            .ok_or_else(|| DispatchError::UnknownNodeType {
+                key: key_of_code(type_code),
+            })?
+            .clone();
+        let model_key = self.node_type_model[&ntk].clone();
+        let model = self.compiled.models.get(&model_key).ok_or_else(|| {
+            DispatchError::Engine(crate::fsm::EngineError::UnknownModel {
+                model: model_key.clone(),
+            })
+        })?;
+        let code = self.arrays.state_of(node) as usize;
+        let Some((cur_state, succ_t, fail_t)) = model.states.get(code) else {
+            return Err(corrupt_state_code(model_key.clone(), code as u8));
+        };
+        let mut blockers = Vec::new();
+        let _ = (succ_t, fail_t);
+
+        // Every transition declared from the current state.
+        for (tk, t) in &self.transitions {
+            if t.model != model_key || &t.from != cur_state {
+                continue;
+            }
+            // 1. Requirements (named failing rules).
+            for r in &t.requirements {
+                if !self.eval_rule(r, node) {
+                    blockers.push(Blocker::UnmetRule {
+                        transition: tk.clone(),
+                        rule: r.clone(),
+                    });
+                }
+            }
+            // 2. Lag pending.
+            if t.timing.lag_ms.is_some() && !self.wheel.lag_ok(node, tk, self.logical_us) {
+                let fire_at = self.wheel.fire_at(node, tk).unwrap_or(0);
+                let remaining = fire_at.saturating_sub(self.logical_us) / 1_000;
+                blockers.push(Blocker::LagPending {
+                    transition: tk.clone(),
+                    remaining_ms: remaining,
+                });
+            }
+            // 3. Deadline armed (informational — it fires on_deadline at expiry).
+            if self.wheel.deadline_armed(node, tk) {
+                // not a blocker per se; the deadline is the transition's own
+                // SLA. Recorded only via PendingGuard below for guards.
+            }
+            // 4. Dependency algebra over incoming dependency edges:
+            //    incoming edges of kinds AND/OR/KOFN/WEIGHTED from other
+            //    nodes whose satisfaction feeds this transition's target...
+            //    In the LatticeDB model, dependency edges feed a node's
+            //    *satisfaction*, which guards read. For dispatch-level
+            //    blockers we compute the node's own satisfaction deficits.
+            let incoming = self.incoming_dependency_edges(node);
+            if !incoming.is_empty() {
+                let verdict = evaluate_incoming(&incoming, None);
+                if verdict == crate::algebra::Verdict::NotSatisfied {
+                    let (satisfied, total) = incoming
+                        .iter()
+                        .fold((0usize, 0usize), |(s, t), (_, sat, _)| {
+                            (s + usize::from(*sat), t + 1)
+                        });
+                    let kind_name = incoming[0].0.name();
+                    blockers.push(Blocker::DependencyDeficit {
+                        transition: tk.clone(),
+                        kind: kind_name,
+                        satisfied,
+                        required: total,
+                    });
+                }
+            }
+            // 5. GUARD edges targeting this node: pending while sigma unreached.
+            for eid in self.arrays.dep_in_ids(node) {
+                let Some(rec) = self.arrays.edge(*eid) else {
+                    continue;
+                };
+                if rec.kind != kinds::GUARD {
+                    continue;
+                }
+                if let Some((sigma, tau)) = self.guard_params.get(&(rec.aux as u64))
+                    && tau == tk
+                {
+                    let src_state = self.state_key_of(rec.src).ok();
+                    if src_state.as_ref() != Some(sigma) {
+                        blockers.push(Blocker::PendingGuard {
+                            transition: tk.clone(),
+                            source: rec.src,
+                            sigma: sigma.clone(),
+                        });
+                    }
+                }
+            }
+            // 6. INHIBIT edges targeting this node (active inhibition).
+            for eid in self.arrays.dep_in_ids(node) {
+                let Some(rec) = self.arrays.edge(*eid) else {
+                    continue;
+                };
+                if rec.kind != kinds::INHIBIT {
+                    continue;
+                }
+                // activation: on_source_final | while_source_active — v1
+                // core level: active when the source is NOT in a success
+                // terminal (on_source_final) or alive at all (while_active).
+                let src_state = self.state_key_of(rec.src).ok();
+                let active = match src_state.as_ref() {
+                    None => true,
+                    Some(skey) => {
+                        // success-terminal source stops inhibiting
+                        !self.is_success_terminal(rec.src, skey)
+                    }
+                };
+                if active {
+                    blockers.push(Blocker::Inhibited {
+                        transition: tk.clone(),
+                        source: rec.src,
+                        activation: "while_source_active",
+                    });
+                }
+            }
+        }
+        Ok(BlockerSet { node, blockers })
+    }
+
+    fn incoming_dependency_edges(&self, node: NodeId) -> Vec<(Kind, bool, i128)> {
+        let mut out = Vec::new();
+        for eid in self.arrays.dep_in_ids(node) {
+            let Some(rec) = self.arrays.edge(*eid) else {
+                continue;
+            };
+            let Some(kind) = Kind::from_byte(rec.kind) else {
+                continue;
+            };
+            // Satisfaction kinds ONLY (§10 rollup): AND/OR/KOFN/WEIGHTED.
+            // GUARD/INHIBIT/XOR/MIRROR carry separate semantics and have
+            // their own blocker classes — mixing them into the satisfaction
+            // count would corrupt the deficit report (found by the
+            // blockers test: guard+inhibit edges inflated required 2→4).
+            if !matches!(kind, Kind::And | Kind::Or | Kind::Kofn | Kind::Weighted) {
+                continue;
+            }
+            let satisfied = self
+                .state_key_of(rec.src)
+                .ok()
+                .map(|s| self.is_success_terminal(rec.src, &s))
+                .unwrap_or(false);
+            out.push((kind, satisfied, 10_000i128));
+        }
+        out
+    }
+
+    fn is_success_terminal(&self, node: NodeId, state: &Key) -> bool {
+        let type_code = self.arrays.type_of(node);
+        let Some(ntk) = self.node_type_key(type_code) else {
+            return false;
+        };
+        let Some(model_key) = self.node_type_model.get(ntk) else {
+            return false;
+        };
+        let Some(model) = self.compiled.models.get(model_key) else {
+            return false;
+        };
+        model
+            .states
+            .iter()
+            .find(|(k, _, _)| k == state)
+            .map(|(_, s, _)| *s)
+            .unwrap_or(false)
+    }
+}
