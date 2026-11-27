@@ -7,4 +7,5 @@
 //! bounded queues at the sequencing point (ARCHITECTURE §8 execution model).
 
 pub mod frame;
+pub mod handshake;
 pub mod tlv;
