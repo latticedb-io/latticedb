@@ -1,8 +1,7 @@
 # MANIFEST — LatticeDB
 
 > Codename: `uvdb` · Product: **LatticeDB** · Company: **Emergenta** · Version **0.3** · 2026-11-26
-> Status: **FROZEN** — all architectural discussions closed; sole open item: Q10 v1
-> method-set confirmation (research delivered, phased vector accepted as working model).
+> Status: **FROZEN** — all architectural discussions closed (Q10 closed 2026-11-27).
 > Supporting research in `research/`.
 
 ---
@@ -235,9 +234,13 @@ compliance time-travel (epoch reads + audit).
 - **Q4 — CLOSED.** Containment hierarchy frozen (P6, §5): Host → Database → Graph schema
   (namespace) → forest → node. Cross-schema E_D allowed within a Database; acyclic per
   Database; no cross-Database references.
-- **Q10 — research delivered** (`research/identity-auth-survey.md`): phased identity
-  vector (v1 SCRAM/cert/UDS + policy table; v1.x OIDC/LDAP federation; v2 SPIFFE/IAM).
-  Pending: confirm v1 method set and host-level subjects.
+- **Q10 — CLOSED (2026-11-27).** v1 identity method set confirmed (per
+  `research/identity-auth-survey.md` §4, SPEC-02 §4): SCRAM-SHA-256 (+ `scram_plus`
+  channel binding on TLS) · client-cert (CN/SAN URI → subject map) · UDS peer-cred ·
+  TLS require/verify-ca/verify-full · trust (library mode only). Host-level subjects
+  (PG cluster-role precedent); policy table = host config, hot-reloadable, evaluated
+  once per connection. Federation (OIDC/LDAP + pooler-issued short tokens) stays v1.x;
+  SPIFFE/SPIRE + cloud IAM stays v2.
 - **Q12 — CLOSED.** Product: **LatticeDB** (codename `uvdb`). Company: **Emergenta**
   (bare; "by Emergenta" endorsements). Assets registered 2026-11-26: emergenta.io/.dev
   (canonical .dev, .io alias), latticedb.io, GitHub `latticedb-io`. emergenta.com parked
@@ -262,6 +265,19 @@ compliance time-travel (epoch reads + audit).
   resumable migration scripts; logical deletion only.
 - **Transport:** three sockets; Postgres-v3 framing; TLS-at-origin; PROXY v2; pooler =
   first-party identity gateway.
+- **Execution model (2026-11-27):** dedicated OS thread pools in all kernel crates
+  (sequencer, workers, merge pool) — no async runtime in core/engine/storage/tx. One
+  process: the Host owns its listeners; there is no edge↔kernel IPC hop (forced by v1
+  auth — UDS peer-cred and TLS-at-origin identify the client only when the DB process
+  terminates the connection — and by P12: gateways are protocol clients, no second path
+  into the core). Async session tasks submit commands to the synchronous kernel via
+  bounded queues at the sequencing point; gateways/pooler stay external protocol
+   clients. Pool sizes/budgets via SPEC-02 §10 config (profiles + autodetect).
+- **Pre-implementation decisions (2026-11-27):** wire runtime = tokio, confined to
+  `lattice-wire`/`lattice-admin` (SPEC-02 §12.8); global allocator = mimalloc default,
+  build-feature-selectable, tunables in §10 config (SPEC-02 §12.9); journal I/O =
+  buffered writes + `fdatasync` (default) at the group-commit boundary, O_DIRECT
+  deferred behind an M5 evidence gate (SPEC-03 §9.8); Q10 closed — see §9.
 - **Frozen invariants:** timer-only time · timer wheel owns deadlines/lags · domain terms
   are labels, not entities · business layer owns ergonomics.
 - **Naming & assets (2026-11-26):** company **Emergenta** (bare, no suffixes), product

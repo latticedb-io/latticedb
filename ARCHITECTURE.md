@@ -115,6 +115,10 @@ latticedb/                    (github.com/latticedb-io/latticedb)
 **Dependency rules:** strictly downward; `wire` never touches `storage` directly; `core`
 has zero I/O (keeps library mode pure and fuzzing fast); Kotlin side lives in a separate
 repo (`sdk-kotlin`, `gateway-mcp`, `gateway-rest`) consuming the wire protocol only.
+No async runtime in kernel crates — `wire`/`admin` own tokio/tonic and hand commands to
+blocking kernel APIs via bounded queues (SPEC-02 §12.8); the global allocator is
+mimalloc by default behind a build feature, its tunables surfaced as §10 config
+(SPEC-02 §12.9).
 
 ## 4. Containment & addressing
 
@@ -216,6 +220,15 @@ journal facts; re-derivable at replay; wall-clock never enters predicates.
 - **Staging:** per-partition staging buffers → background assembler → parts; mergers
   concurrent with readers (immutable parts).
 - **Readers:** lock-free epoch snapshots (mmap + atomic manifest swap; LMDB discipline).
+- **Execution model:** one process, no edge↔kernel IPC. The Host binary owns the
+  wire/admin listeners; async session tasks multiplex sockets, parse frames, and submit
+  commands to the synchronous kernel through bounded queues at the sequencing point.
+  Kernel crates (core/engine/storage/tx) run on dedicated OS thread pools, expose
+  blocking APIs only, and contain no async runtime. This topology is forced by the v1
+  auth design (UDS SCM_CREDENTIALS and TLS-at-origin identify the client only when the
+  DB process itself terminates the connection) and by the layering law (P12: gateways
+  are protocol clients; there is no second path into the core). Pool sizes and budgets
+  are SPEC-02 §10 config parameters, sized by profiles/autodetect.
 - **Correctness:** validation node-local (sequencing-time) + confluent derivations ⇒
   any interleave converges to the journal's own replay. Property-tested: (a) replay
   identity, (b) permutation-convergence of derivations.

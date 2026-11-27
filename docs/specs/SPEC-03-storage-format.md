@@ -259,3 +259,15 @@ heal them; corruption inside the journal itself is never auto-healed silently.
    generation = MANIFEST-listed). Graph/attr/gen ride in the part header (already
    specified §4) — never in the filename. Old proposal (`p.<graph>-<attr>-<gen>.lpart`)
    superseded: no escaping/length hazards, sort-order = age order.
+8. **Journal I/O boundary: buffered writes + sync at the group-commit boundary;
+   O_DIRECT out of v1** — CONFIRMED (2026-11-27, owner). Segment appends are buffered
+   sequential writes; durability = sync of the active segment per group-commit window
+   via `storage.sync_method` (§10): default `fdatasync` on Linux — the PostgreSQL
+   default choice (file size counts as data-required metadata, so fdatasync is
+   crash-safe for appends and cheaper than fsync); `fsync` / `open_datasync` /
+   `open_sync` selectable. Reads stay mmap + kernel page cache (LMDB discipline, §3) —
+   one cache, no double-buffering. O_DIRECT / io_uring AIO rejected for v1: it pays off
+   for engines that own the entire stack and bypass the page cache (TigerBeetle model);
+   we deliberately share it. Seam documented: `storage.io = direct` future value,
+   revisited at M5 only with latency evidence. MANIFEST swap durability per §2
+   (unchanged).

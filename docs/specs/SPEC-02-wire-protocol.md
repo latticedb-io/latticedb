@@ -352,3 +352,28 @@ are never exposed here.
 6. **No hardcoded parameters; full configuration system with profiles + host autodetect**
    — CONFIRMED as owner law, implemented as §10 (supersedes the original fixed-limits table).
 7. **Error-code registry + hint law** — CONFIRMED.
+8. **Wire runtime: tokio, confined to the non-kernel crates** — CONFIRMED
+   (2026-11-27, owner). `lattice-wire` (+ `lattice-admin` via tonic) own the tokio
+   multi-threaded runtime; kernel crates expose blocking APIs only and must not depend
+   on any async runtime (CI-enforced dependency check; ARCH §3). Session tasks hand
+   parsed commands to the kernel via bounded queues at the sequencing point. Rationale:
+   socket-facing concurrency (many cheap sessions, pipelining, credit windows) is
+   tokio's exact workload, and its LTS backport program suits a database dependency;
+   tonic (tokio-family) is already the admin gRPC stack, keeping one runtime family.
+   io_uring stacks rejected for v1 — tokio-uring self-described "very young" upstream,
+   glommio is a Linux-only thread-per-core executor (io_uring-only, memlock rlimits,
+   kernel ≥ 5.8) that would impose its scheduler on the whole process — seam documented
+   for post-v1 if latency evidence demands. Runtime worker counts are §10 `resources`
+   parameters, disjoint from kernel thread pools.
+9. **Global allocator: mimalloc by default, selectable at build time, tunables in §10
+   config** — CONFIRMED (2026-11-27, owner). `#[global_allocator]` = mimalloc (feature
+   `allocator-mimalloc`, default); `allocator-system` escape hatch for debug/ASan/valgrind
+   builds; jemalloc not carried (one alternative allocator is enough — T-505 benchmark
+   gate may revisit with metrics evidence). Rationale: free-list sharding + eager page
+   purging target exactly long-running multithreaded servers; bounded worst-case;
+   actively maintained upstream (v3 line, first-class Rust bindings). Mimalloc runtime
+   options (purge delay, THP, huge/large pages, eager commit) surface as
+   `resources.allocator.*` §10 parameters applied at startup — never via environment
+   variables (upstream ignores env in elevated processes; strict-validation law applies).
+   Allocator choice affects memory layout only: stored bytes stay D1–D4 deterministic.
+   Allocator statistics exposed via the admin metrics plane.
