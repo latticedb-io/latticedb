@@ -353,6 +353,16 @@ impl Machine {
         Ok(())
     }
 
+    /// Greatest k written for an attr on a node (R12 append gate).
+    pub fn max_k(&self, node: NodeId, attr: &Key) -> Option<u64> {
+        let id = self.compiled.attr_ids.get(attr)?;
+        let AttrId(id) = id;
+        self.cells
+            .range((node.0, *id, 0)..=(node.0, *id, u64::MAX))
+            .next_back()
+            .map(|((_, _, k), _)| *k)
+    }
+
     /// Latest cell of an attr on a node (greatest k).
     pub fn latest_cell(&self, node: NodeId, attr: &Key) -> Option<&StoredCell> {
         let id = self.compiled.attr_ids.get(attr)?;
