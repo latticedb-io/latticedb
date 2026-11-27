@@ -3,3 +3,7 @@
 //!
 //! Law (ARCHITECTURE §3): NO I/O, no I/O dependencies, no async runtime — keeps
 //! library mode pure and the determinism fuzz fast.
+
+pub mod arrays;
+pub mod ids;
+pub mod value;
