@@ -23,10 +23,10 @@
 
 ## M0 — bootstrap (pre-M1)
 
-| ID | Task | Spec refs | Acceptance | Deps |
-|---|---|---|---|---|
-| T-000 | Repo skeleton: workspace per ARCHITECTURE §3, CI (fmt/clippy/test), toolchain files | ARCH §3 | CI green on empty crates | — |
-| T-001 | Config subsystem: TOML parse, strict validation, profiles, autodetect skeleton | SPEC-02 §10 | WPT-10.3–10.6 | T-000 |
+| ID | Task | Spec refs | Acceptance | Deps | Status |
+|---|---|---|---|---|---|
+| T-000 | Repo skeleton: workspace per ARCHITECTURE §3, CI (fmt/clippy/test), toolchain files | ARCH §3 | CI green on empty crates | — | review (Supervisor) |
+| T-001 | Config subsystem: TOML parse, strict validation, profiles, autodetect skeleton | SPEC-02 §10 | WPT-10.3–10.6 | T-000 | pending |
 
 ## M1 — graph core + storage + schema graph
 

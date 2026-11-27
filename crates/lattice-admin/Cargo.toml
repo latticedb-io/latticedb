@@ -1,0 +1,13 @@
+[package]
+name = "lattice-admin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+lattice-tx = { path = "../lattice-tx" }
+lattice-storage = { path = "../lattice-storage" }
+
+[lints]
+workspace = true

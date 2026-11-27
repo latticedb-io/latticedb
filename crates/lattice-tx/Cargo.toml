@@ -1,0 +1,16 @@
+[package]
+name = "lattice-tx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+lattice-schema = { path = "../lattice-schema" }
+lattice-storage = { path = "../lattice-storage" }
+lattice-engine = { path = "../lattice-engine" }
+lattice-validate = { path = "../lattice-validate" }
+
+[lints]
+workspace = true

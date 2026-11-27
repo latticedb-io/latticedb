@@ -1,0 +1,12 @@
+[package]
+name = "lattice-schema"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+
+[lints]
+workspace = true

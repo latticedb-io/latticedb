@@ -1,0 +1,19 @@
+[package]
+name = "latticedb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+lattice-schema = { path = "../lattice-schema" }
+lattice-storage = { path = "../lattice-storage" }
+lattice-engine = { path = "../lattice-engine" }
+lattice-validate = { path = "../lattice-validate" }
+lattice-tx = { path = "../lattice-tx" }
+lattice-wire = { path = "../lattice-wire" }
+lattice-admin = { path = "../lattice-admin" }
+
+[lints]
+workspace = true
