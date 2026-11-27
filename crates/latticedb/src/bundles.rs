@@ -133,7 +133,7 @@ pub fn process_mgmt() -> Bundle {
                     ],
                     k("open"),
                 )
-                .expect("terminals + initial valid"),
+                .unwrap_or_else(|e| panic!("bundle fixture invalid: {e}")),
             ),
             transition(
                 "task_start",
@@ -209,7 +209,7 @@ pub fn state_driver() -> Bundle {
                     ],
                     k("idle"),
                 )
-                .expect("endless: no terminals"),
+                .unwrap_or_else(|e| panic!("bundle fixture invalid: {e}")),
             ),
             // Engine-only transitions (empty actors): guard/timer armed per
             // SPEC-01 §9 — machine classes never appear alone in a set.
@@ -292,7 +292,7 @@ pub fn analytics() -> Bundle {
                     ],
                     k("provisioned"),
                 )
-                .expect("terminals + initial valid"),
+                .unwrap_or_else(|e| panic!("bundle fixture invalid: {e}")),
             ),
             transition(
                 "sensor_activate",
