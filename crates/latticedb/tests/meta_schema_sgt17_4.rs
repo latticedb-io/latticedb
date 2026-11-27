@@ -9,7 +9,7 @@ use lattice_core::ids::NodeIdSpace;
 use lattice_core::value::Value;
 use lattice_engine::dispatch::Machine;
 use lattice_schema::catalog::Catalog;
-use lattice_schema::compile::{Compiled, compile, compile_with_lineage};
+use lattice_schema::compile::{compile, compile_with_lineage};
 use lattice_schema::entities::*;
 use lattice_schema::key::Key;
 use lattice_schema::txn::{SchemaOp, SchemaState};
