@@ -27,12 +27,13 @@ fn state(k: &str, name: &str, success: bool, failure: bool) -> State {
     }
 }
 
-/// Fixture: task_flow with three gated transitions from `running`:
-/// - `ship`    requires `has_title` (unmet rule blocker)
-/// - `review`  has 15-minute lag (lag blocker)
-/// - `close`   blocked by an incoming GUARD (pending guard blocker)
-///           AND an incoming INHIBIT edge (inhibition blocker)
-/// - `finish`  blocked by a KOFN dependency deficit
+/// Fixture: task_flow with gated transitions from `running`:
+///
+/// - `ship` requires `has_title` (unmet rule blocker)
+/// - `review` has 15-minute lag (lag blocker)
+/// - `close` blocked by an incoming GUARD (pending guard blocker) plus an
+///   incoming INHIBIT edge (inhibition blocker)
+/// - `finish` blocked by a KOFN dependency deficit
 fn fixture() -> (SchemaState, Machine) {
     let mut st = SchemaState::new(Catalog::fresh());
     let ops = vec![
