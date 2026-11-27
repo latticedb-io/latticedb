@@ -170,6 +170,9 @@ impl std::error::Error for TxnError {}
 pub struct SchemaState {
     pub catalog: Catalog,
     pub deprecations: Deprecations,
+    /// Committed op history in commit order — the catalog blob's source
+    /// (SPEC-03 §3 op-log equivalent) and the journal SCHEMA_TXN payload.
+    pub ops_log: Vec<SchemaOp>,
 }
 
 impl SchemaState {
@@ -177,6 +180,7 @@ impl SchemaState {
         Self {
             catalog,
             deprecations: Deprecations::default(),
+            ops_log: Vec::new(),
         }
     }
 
@@ -195,6 +199,7 @@ impl SchemaState {
             return Err(TxnError { outcomes });
         }
         let epoch = scratch.catalog.schema_epoch;
+        scratch.ops_log.extend(ops.iter().cloned());
         *self = scratch;
         Ok(epoch)
     }

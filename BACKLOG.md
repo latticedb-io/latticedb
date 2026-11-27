@@ -86,3 +86,9 @@ actual chain, so cross-build decode stays correct). Activate zstd at the parts t
 M5 when the ratio/latency evidence demands; SFT-5.3's ratio bound is met by varint
 zig-zag delta-of-delta alone in the interim.
 
+**ED-10 · Compiled-mask blob is not persisted in snapshots; open always recompiles ·
+T-106 · M5 open-speed gate.** SPEC-03 §3 keeps a compiled-mask blob "for open speed,
+ignored if CRC fails → recompile". v1 writes the blob as absent and recompiles from
+the catalog blob deterministically (recompile identity is already acceptance-tested,
+T-103). Persisting the compiled bytes is an open-latency optimization — measure first.
+

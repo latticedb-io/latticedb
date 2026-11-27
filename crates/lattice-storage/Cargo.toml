@@ -15,6 +15,7 @@ zstd = { version = "0.13", optional = true }
 zstd = ["dep:zstd"]
 
 [dev-dependencies]
+lattice-schema = { path = "../lattice-schema" }
 toml = "0.9"
 
 [lints]

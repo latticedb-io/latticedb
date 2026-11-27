@@ -8,3 +8,4 @@
 pub mod codecs;
 pub mod crc32c;
 pub mod journal;
+pub mod snapshot;

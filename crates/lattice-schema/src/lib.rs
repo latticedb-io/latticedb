@@ -7,4 +7,5 @@ pub mod catalog;
 pub mod compile;
 pub mod entities;
 pub mod key;
+pub mod opslog;
 pub mod txn;

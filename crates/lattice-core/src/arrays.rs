@@ -13,7 +13,7 @@
 //! - CSR target lists are strictly ascending (binary-searchable); edge CSR
 //!   entries reference live edges only.
 
-use crate::ids::{EdgeId, Epoch, GraphId, IdSpaceError, NodeId, NodeIdSpace};
+use crate::ids::{EdgeId, Epoch, GraphId, IdSpaceError, NO_PARENT, NodeId, NodeIdSpace};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArrayError {
@@ -31,6 +31,10 @@ pub enum ArrayError {
     HasDependents {
         children: usize,
         dep_edges: usize,
+    },
+    /// Snapshot import rejected: raw vectors are structurally inconsistent.
+    MalformedRaw {
+        reason: String,
     },
     EdgeNotFound(EdgeId),
     /// Dependency self-loop (cycle detection beyond this is R4, engine).
@@ -63,6 +67,9 @@ impl std::fmt::Display for ArrayError {
                     "node has dependents: {children} children, {dep_edges} dependency edges"
                 )
             }
+            ArrayError::MalformedRaw { reason } => {
+                write!(f, "malformed raw arrays: {reason}")
+            }
             ArrayError::EdgeNotFound(e) => write!(f, "edge {e} not found"),
             ArrayError::SelfLoop { node } => write!(f, "self-loop on node {node}"),
             ArrayError::EdgeAlreadyDead(e) => write!(f, "edge {e} already removed"),
@@ -89,9 +96,30 @@ pub struct EdgeRec {
     pub alive: bool,
 }
 
+/// Raw SoA snapshot of the arrays (SPEC-03 §3 structural_arrays block).
+/// Field widths and ordering are fixed by the spec.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RawArrays {
+    pub alive: Vec<u8>,
+    pub parent: Vec<u32>,
+    pub graph: Vec<u16>,
+    pub node_type: Vec<u16>,
+    pub state: Vec<u8>,
+    pub epoch: Vec<u64>,
+    pub attr_count: Vec<u16>,
+    pub child_off: Vec<u64>,
+    pub child_tgt: Vec<u32>,
+    pub dep_out_off: Vec<u64>,
+    pub dep_out_tgt: Vec<u32>,
+    pub dep_in_off: Vec<u64>,
+    pub dep_in_tgt: Vec<u32>,
+    /// `(src, dst, kind, aux, alive)` per edge, edge_id == index.
+    pub edges: Vec<(u32, u32, u8, u32, u8)>,
+}
+
 /// Structural SoA/CSR arrays. `V` = id-space watermark; all per-node vectors
 /// are indexed by `node_id`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GraphArrays {
     space: NodeIdSpace,
     alive: Vec<bool>,
@@ -425,6 +453,91 @@ impl GraphArrays {
 
     pub fn alive_count(&self) -> usize {
         self.alive.iter().filter(|a| **a).count()
+    }
+
+    /// Export to the snapshot encoding (SPEC-03 §3 structural_arrays).
+    /// Roots and dead nodes carry `NO_PARENT`; dead nodes carry `alive = 0`.
+    pub fn to_raw(&self) -> RawArrays {
+        RawArrays {
+            alive: self.alive.iter().map(|a| u8::from(*a)).collect(),
+            parent: self
+                .parent
+                .iter()
+                .map(|p| p.map_or(NO_PARENT, |n| n.0))
+                .collect(),
+            graph: self.graph.iter().map(|g| g.0).collect(),
+            node_type: self.node_type.clone(),
+            state: self.state.clone(),
+            epoch: self.epoch.iter().map(|e| e.0).collect(),
+            attr_count: self.attr_count.clone(),
+            child_off: self.child_off.clone(),
+            child_tgt: self.child_tgt.iter().map(|n| n.0).collect(),
+            dep_out_off: self.dep_out_off.clone(),
+            dep_out_tgt: self.dep_out_tgt.iter().map(|e| e.0).collect(),
+            dep_in_off: self.dep_in_off.clone(),
+            dep_in_tgt: self.dep_in_tgt.iter().map(|e| e.0).collect(),
+            edges: self
+                .edges
+                .iter()
+                .map(|e| (e.src.0, e.dst.0, e.kind, e.aux, u8::from(e.alive)))
+                .collect(),
+        }
+    }
+
+    /// Rebuild from a snapshot export; the id-space watermark derives from
+    /// the per-node vector length. Callers verify invariants after import.
+    pub fn from_raw(raw: &RawArrays) -> Result<Self, ArrayError> {
+        let v = raw.alive.len();
+        if raw.parent.len() != v
+            || raw.graph.len() != v
+            || raw.node_type.len() != v
+            || raw.state.len() != v
+            || raw.epoch.len() != v
+            || raw.attr_count.len() != v
+            || raw.child_off.len() != v + 1
+            || raw.dep_out_off.len() != v + 1
+            || raw.dep_in_off.len() != v + 1
+        {
+            return Err(ArrayError::MalformedRaw {
+                reason: "per-node vector length mismatch".into(),
+            });
+        }
+        let mut arrays = Self::new(NodeIdSpace::restore(v as u32));
+        arrays.alive = raw.alive.iter().map(|a| *a != 0).collect();
+        arrays.parent = raw
+            .parent
+            .iter()
+            .map(|p| {
+                if *p == NO_PARENT {
+                    None
+                } else {
+                    Some(NodeId(*p))
+                }
+            })
+            .collect();
+        arrays.graph = raw.graph.iter().map(|g| GraphId(*g)).collect();
+        arrays.node_type = raw.node_type.clone();
+        arrays.state = raw.state.clone();
+        arrays.epoch = raw.epoch.iter().map(|e| Epoch(*e)).collect();
+        arrays.attr_count = raw.attr_count.clone();
+        arrays.child_off = raw.child_off.clone();
+        arrays.child_tgt = raw.child_tgt.iter().map(|n| NodeId(*n)).collect();
+        arrays.dep_out_off = raw.dep_out_off.clone();
+        arrays.dep_out_tgt = raw.dep_out_tgt.iter().map(|e| EdgeId(*e)).collect();
+        arrays.dep_in_off = raw.dep_in_off.clone();
+        arrays.dep_in_tgt = raw.dep_in_tgt.iter().map(|e| EdgeId(*e)).collect();
+        arrays.edges = raw
+            .edges
+            .iter()
+            .map(|(src, dst, kind, aux, alive)| EdgeRec {
+                src: NodeId(*src),
+                dst: NodeId(*dst),
+                kind: *kind,
+                aux: *aux,
+                alive: *alive != 0,
+            })
+            .collect();
+        Ok(arrays)
     }
 
     /// Full structural invariant check (tests + debug builds).
