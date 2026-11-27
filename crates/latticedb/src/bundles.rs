@@ -44,8 +44,13 @@ pub struct InstallReport {
     pub installed: bool,
 }
 
+/// Bundle keys are compile-time literals verified by the SGT-17 tests; a
+/// violation is a programmer error surfaced as a loud invariant failure.
 fn k(s: &str) -> Key {
-    Key::parse(s).expect("bundle keys are compile-time literals")
+    match Key::parse(s) {
+        Ok(key) => key,
+        Err(e) => panic!("bundle fixture key {s:?} violates the key grammar: {e}"),
+    }
 }
 
 fn state(kk: &str, name: &str, success: bool, failure: bool) -> State {
@@ -82,7 +87,7 @@ fn transition(kk: &str, model: &str, from: &str, to: &str, actors: Vec<ActorClas
             TransitionTiming::default(),
             Vec::new(),
         )
-        .expect("bundle transitions are compile-time valid"),
+        .unwrap_or_else(|e| panic!("bundle fixture invalid ({}): {e}", "compile-time literal")),
     )
 }
 
@@ -103,7 +108,7 @@ pub fn process_mgmt() -> Bundle {
                     k("task_status"),
                     vec![k("open"), k("running"), k("done"), k("failed")],
                 )
-                .expect("≤256 values"),
+                .unwrap_or_else(|e| panic!("bundle fixture invalid: {e}")),
             ),
             SchemaOp::CreateAttribute(attribute(
                 "task_title",
@@ -248,7 +253,9 @@ pub fn analytics() -> Bundle {
             }),
             SchemaOp::CreateEnum(
                 EnumType::new(k("sensor_kind"), vec![k("temperature"), k("pressure")])
-                    .expect("bundle enum valid"),
+                    .unwrap_or_else(|e| {
+                        panic!("bundle fixture invalid ({}): {e}", "compile-time literal")
+                    }),
             ),
             SchemaOp::CreateAttribute(attribute(
                 "sensor_label",
