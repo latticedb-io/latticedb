@@ -42,11 +42,14 @@ wire/admin only — SPEC-02 §12.8), allocator (mimalloc — §12.9), journal I/
 
 ## Next (in order)
 
-1. **Supervisor review of T-000** (status: review) → then T-000 done.
+1. **Supervisor review of T-000** (status: review) → then T-000 done. Tag `t000-skeleton`
+   already at the T-000 commit; Supervisor review range = `bccfb69..t000-skeleton`.
 2. **T-001**: config subsystem — TOML (serde+toml crate), strict validation
    (deny_unknown_fields), profiles dev/laptop/server/analytics, autodetect skeleton,
    `resources.allocator.*` mapping (SPEC-02 §12.9), policy-table file format shared
    (SPEC-02 §10, §12.4). Acceptance: WPT-10.3–10.6 as real functional tests.
+   T-001 done + Supervisor sign-off ⇒ **tag `m0-bootstrap`** (AGENTS.md rule 9 — never
+   skip milestone tags).
 3. Then M1 chain per TASKS.md (T-101…T-112), tasks land in `review` for Supervisor.
 
 ## DoD reminder (per AGENTS.md)

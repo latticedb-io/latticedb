@@ -48,6 +48,11 @@ decision log or MANIFEST §10) approved by the architect pair. **No silent spec 
    session state goes to `STATE.md` (create on first use), durable rules here.
 8. **Language.** Code, docs, comments, commit messages: English. Commit style: concise
    imperative, reference task ID (`T-107: part run directory + zone maps`).
+9. **Tag discipline (owner-mandated).** Every milestone completion gets an annotated
+   tag `m<N>-<slug>` (e.g. `m0-bootstrap`, `m1-graph-core`) pushed to origin as part of
+   that milestone's Definition of Done; task-level checkpoints may use `t<NNN>-<slug>`
+   (e.g. `t000-skeleton`). Tags are never skipped or retro-batched — the Supervisor uses
+   them as review ranges (`git diff <prev-tag>..<tag>`).
 
 ## Non-goals (do not build)
 
