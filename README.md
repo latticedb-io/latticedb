@@ -90,6 +90,10 @@ that could affect replay determinism must pass the determinism oracle
 (`SPEC-03` §1) before merge. Spec changes require a decision entry — no silent
 drift. See `AGENTS.md` for the working rules.
 
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE). Copyright 2026 Emergenta.
+
 ## Links
 
 - Site: [latticedb.io](https://latticedb.io)

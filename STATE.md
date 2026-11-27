@@ -35,8 +35,8 @@ wire/admin only — SPEC-02 §12.8), allocator (mimalloc — §12.9), journal I/
   1.99.1 (edition 2024 supported).
 - **GitHub Actions availability on org `latticedb-io` NOT yet confirmed** — verify the
   first CI run after push; if Actions are disabled, owner must enable them.
-- LICENSE still undecided (owner). Needed before crates.io claim (M1). Workspace
-  `license` field intentionally unset.
+- LICENSE decided 2026-11-27: **Apache-2.0** (`LICENSE` file, copyright Emergenta;
+  `workspace.package.license = "Apache-2.0"`). crates.io claim unblocked for M1.
 - Roles: owner + lead agent = architect pair; lead agent = engineer + QA;
   **Supervisor** = separate independent agent sessions, review-only, gates DoD.
 
