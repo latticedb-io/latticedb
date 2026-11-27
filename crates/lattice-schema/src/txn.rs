@@ -207,8 +207,15 @@ impl SchemaState {
 
 /// Shared validation pass for plan and commit (SGT-16.3 fidelity): accepted
 /// ops are applied INTO `staged` (the caller decides whether to keep it).
+///
+/// The P3 compile gate is TXN-level: one schema txn = one epoch = one
+/// compile. Intermediate ops may transiently produce non-compilable states
+/// (a state model precedes its transitions in valid bundles); only the
+/// final post-txn catalog must compile. Failure rejects the whole atomic
+/// txn (nothing applied) with the compile error on the synthetic trailing
+/// outcome.
 fn validate_ops(staged: &mut SchemaState, ops: &[SchemaOp]) -> Vec<OpResult> {
-    let mut outcomes = Vec::with_capacity(ops.len());
+    let mut outcomes = Vec::with_capacity(ops.len() + 1);
     for (i, op) in ops.iter().enumerate() {
         match apply_op(staged, op) {
             Ok(()) => outcomes.push(OpResult {
@@ -225,6 +232,18 @@ fn validate_ops(staged: &mut SchemaState, ops: &[SchemaOp]) -> Vec<OpResult> {
             }),
         }
     }
+    // Structural/R13 rejections already gate per-op; a rejected op leaves
+    // the staged catalog in whatever state the accepted prefix produced —
+    // the txn-level compile still runs on that prefix (bundle authors get
+    // one precise compile verdict for the txn as a whole).
+    if let Err(e) = crate::compile::compile(&staged.catalog) {
+        outcomes.push(OpResult {
+            op_index: ops.len(),
+            accepted: false,
+            error: Some(e),
+            r13: None,
+        });
+    }
     outcomes
 }
 
@@ -237,7 +256,6 @@ type OpError = (SchemaError, Option<R13Violation>);
 fn apply_op(staged: &mut SchemaState, op: &SchemaOp) -> Result<(), OpError> {
     let mut trial = staged.clone();
     apply_op_inner(&mut trial, op)?;
-    compile(&trial.catalog).map_err(|e| (e, None))?;
     *staged = trial;
     Ok(())
 }

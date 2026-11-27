@@ -319,14 +319,18 @@ fn sgt_16_3_dry_run_fidelity_and_atomicity() {
             scopes: vec![Scope::ReadSubtree],
         }),
     ];
+    // Txn-level compile gate: the ghost set is structurally valid (R13 has
+    // nothing to count) — the whole txn is rejected by the compile verdict
+    // on the synthetic trailing outcome (op_index == ops.len()).
     let planned = st.plan(&ops);
-    assert_eq!(planned.len(), 3);
-    assert!(planned[0].accepted);
-    assert!(
-        !planned[1].accepted,
-        "ghost member rejected by the compile gate"
-    );
-    assert!(planned[2].accepted);
+    assert_eq!(planned.len(), 4, "3 ops + 1 txn-level compile verdict");
+    assert!(planned[0].accepted && planned[1].accepted && planned[2].accepted);
+    assert!(!planned[3].accepted, "txn compile gate fires");
+    assert_eq!(planned[3].op_index, 3);
+    assert!(matches!(
+        planned[3].error,
+        Some(SchemaError::UnresolvedSetMember { .. })
+    ));
 
     let epoch_before = st.catalog.schema_epoch;
     let err = st.commit(ops).expect_err("atomic commit must fail");
@@ -342,19 +346,24 @@ fn sgt_16_3_dry_run_fidelity_and_atomicity() {
         !st.catalog.attributes.contains_key(&key("name")),
         "no partial application"
     );
-    assert!(!st.catalog.roles.contains_key(&key("reader")));
-
-    let accepted = vec![
-        SchemaOp::CreateAttribute(attr_def("name")),
-        SchemaOp::CreateRole(Role {
-            key: key("reader"),
-            scopes: vec![Scope::ReadSubtree],
-        }),
-    ];
-    let epoch = st.commit(accepted).expect("clean txn");
+    assert!(
+        !st.catalog.roles.contains_key(&key("reader")),
+        "no partial application"
+    );
+    // Clean commit of the accepted subset: epoch bumps exactly +1 (SGT-1.2).
+    let epoch_before2 = st.catalog.schema_epoch;
+    let epoch = st
+        .commit(vec![
+            SchemaOp::CreateAttribute(attr_def("name")),
+            SchemaOp::CreateRole(Role {
+                key: key("reader"),
+                scopes: vec![Scope::ReadSubtree],
+            }),
+        ])
+        .expect("clean txn");
     assert_eq!(
         epoch,
-        epoch_before + 1,
+        epoch_before2 + 1,
         "SGT-1.2: exactly one epoch bump per txn"
     );
     assert!(st.catalog.attributes.contains_key(&key("name")));
@@ -443,16 +452,18 @@ fn commit_is_compile_gated() {
             )
             .unwrap(),
         )])
-        .expect_err(
-            "backward motion into an ancestor is rejected (full-graph DFS detects the cycle before the per-edge rank check)",
-        );
+        .expect_err("backward motion into an ancestor is rejected by the txn-level compile gate");
+    // One op outcome (accepted) + the synthetic compile rejection.
+    assert_eq!(err.outcomes.len(), 2);
+    assert!(err.outcomes[0].accepted);
+    assert_eq!(err.outcomes[1].op_index, 1);
     assert!(
         matches!(
-            err.outcomes[0].error,
+            err.outcomes[1].error,
             Some(SchemaError::FinalizingCycle { .. }) | Some(SchemaError::BackwardRank { .. })
         ),
         "got: {:?}",
-        err.outcomes[0].error
+        err.outcomes[1].error
     );
     assert!(
         !st2.catalog.transitions.contains_key(&key("back")),
