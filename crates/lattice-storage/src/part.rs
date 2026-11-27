@@ -476,9 +476,10 @@ impl PartBuilder {
                 }
             }
             presence.extend_from_slice(&bitmap);
+            let first_k = run_cells.first().ok_or_else(|| corrupt("empty run"))?.k.0;
             entries.push((
                 node.0,
-                run_cells.first().expect("run non-empty").k.0,
+                first_k,
                 cell_count,
                 values.len() as u32,
                 data_off as u64,

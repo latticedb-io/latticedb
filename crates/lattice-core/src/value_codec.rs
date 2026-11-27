@@ -33,6 +33,15 @@ impl std::fmt::Display for ValueError {
 
 impl std::error::Error for ValueError {}
 
+/// LE array from a statically verified slice (`arr` guarantees the length;
+/// `copy_from_slice` panics loudly on any mismatch — an explicit invariant,
+/// never a silent default).
+fn le<const N: usize>(src: &[u8]) -> [u8; N] {
+    let mut out = [0u8; N];
+    out.copy_from_slice(src);
+    out
+}
+
 /// Encode one value.
 pub fn encode_value(v: &Value, out: &mut Vec<u8>) {
     match v {
@@ -85,12 +94,12 @@ pub fn encode_value(v: &Value, out: &mut Vec<u8>) {
             out.extend_from_slice(&rec.presence_mask().to_le_bytes());
             out.extend_from_slice(&(rec.field_count() as u32).to_le_bytes());
             for i in 0..rec.field_count() {
-                // Absent fields contribute no bytes: the presence bit says
-                // everything (decode skips them).
-                if rec.get(i).is_some() {
-                    encode_value(rec.get(i).expect("checked present"), out);
-                } else {
-                    encode_value(&Value::Bool(false), out); // placeholder, masked
+                match rec.get(i) {
+                    Some(v) => encode_value(v, out),
+                    // Placeholder for absent fields: the presence bit says
+                    // everything (decode skips setting it), but the byte is
+                    // consumed — symmetric with the reader.
+                    None => encode_value(&Value::Bool(false), out),
                 }
             }
         }
@@ -127,17 +136,12 @@ pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
         }
         2 => {
             let a = arr(data, &mut pos, 8)?;
-            (
-                Value::I64(i64::from_le_bytes(a[..8].try_into().expect("8"))),
-                pos,
-            )
+            (Value::I64(i64::from_le_bytes(le(&a[(8)..]))), pos)
         }
         3 => {
             let a = arr(data, &mut pos, 8)?;
             (
-                Value::F64(f64::from_bits(u64::from_le_bytes(
-                    a[..8].try_into().expect("8"),
-                ))),
+                Value::F64(f64::from_bits(u64::from_le_bytes(le(&a[(8)..])))),
                 pos,
             )
         }
@@ -155,7 +159,7 @@ pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
         }
         5 => {
             need(data, pos, 4)?;
-            let len = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4")) as usize;
+            let len = u32::from_le_bytes(le(&data[pos..pos + 4])) as usize;
             pos += 4;
             need(data, pos, len)?;
             let s = String::from_utf8(data[pos..pos + len].to_vec())
@@ -165,7 +169,7 @@ pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
         }
         6 => {
             need(data, pos, 4)?;
-            let len = u32::from_le_bytes(data[pos..pos + 4].try_into().expect("4")) as usize;
+            let len = u32::from_le_bytes(le(&data[pos..pos + 4])) as usize;
             pos += 4;
             need(data, pos, len)?;
             let b = data[pos..pos + len].to_vec();
@@ -174,22 +178,16 @@ pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
         }
         7 => {
             let a = arr(data, &mut pos, 8)?;
-            (
-                Value::Timestamp(i64::from_le_bytes(a[..8].try_into().expect("8"))),
-                pos,
-            )
+            (Value::Timestamp(i64::from_le_bytes(le(&a[(8)..]))), pos)
         }
         8 => {
             let a = arr(data, &mut pos, 8)?;
-            (
-                Value::Duration(i64::from_le_bytes(a[..8].try_into().expect("8"))),
-                pos,
-            )
+            (Value::Duration(i64::from_le_bytes(le(&a[(8)..]))), pos)
         }
         9 => {
             let a = arr(data, &mut pos, 4)?;
             (
-                Value::NodeRef(NodeId(u32::from_le_bytes(a[..4].try_into().expect("4")))),
+                Value::NodeRef(NodeId(u32::from_le_bytes(le(&a[(4)..])))),
                 pos,
             )
         }
@@ -200,8 +198,8 @@ pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
         }
         11 => {
             need(data, pos, 12)?;
-            let presence = u64::from_le_bytes(data[pos..pos + 8].try_into().expect("8"));
-            let count = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().expect("4")) as usize;
+            let presence = u64::from_le_bytes(le(&data[pos..pos + 8]));
+            let count = u32::from_le_bytes(le(&data[pos + 8..pos + 12])) as usize;
             pos += 12;
             let mut rv = RecordValue::default();
             for i in 0..count {
