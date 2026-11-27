@@ -6,3 +6,4 @@ pub mod algebra;
 pub mod dispatch;
 pub mod fsm;
 pub mod propagation;
+pub mod timer;

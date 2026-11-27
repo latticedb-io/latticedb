@@ -55,6 +55,8 @@ pub enum EngineError {
     },
     /// Structural-array failure inside effects (spawn/cancel).
     Arrays(lattice_core::arrays::ArrayError),
+    /// Timer-wheel failure (double-arm inside dispatch).
+    Timers(crate::timer::TimerError),
 }
 
 impl fmt::Display for EngineError {
@@ -87,6 +89,7 @@ impl fmt::Display for EngineError {
                 )
             }
             EngineError::Arrays(e) => write!(f, "arrays: {e}"),
+            EngineError::Timers(e) => write!(f, "timers: {e}"),
         }
     }
 }
@@ -96,6 +99,12 @@ impl std::error::Error for EngineError {}
 impl From<lattice_core::arrays::ArrayError> for EngineError {
     fn from(e: lattice_core::arrays::ArrayError) -> Self {
         EngineError::Arrays(e)
+    }
+}
+
+impl From<crate::timer::TimerError> for EngineError {
+    fn from(e: crate::timer::TimerError) -> Self {
+        EngineError::Timers(e)
     }
 }
 

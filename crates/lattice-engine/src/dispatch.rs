@@ -130,6 +130,11 @@ pub enum DispatchError {
     },
     /// select_branch: payload must carry the selected branch as NodeRef.
     MissingBranchSelection,
+    /// SGT-9.4: the transition's lag has not elapsed since from-entry.
+    LagNotElapsed {
+        transition: Key,
+        lag_ms: u64,
+    },
 }
 
 impl fmt::Display for DispatchError {
@@ -175,6 +180,12 @@ impl fmt::Display for DispatchError {
                 write!(
                     f,
                     "node {selected} is not an XOR branch of decision node {node}"
+                )
+            }
+            DispatchError::LagNotElapsed { transition, lag_ms } => {
+                write!(
+                    f,
+                    "transition `{transition}` lag {lag_ms}ms not elapsed since state entry"
                 )
             }
             DispatchError::MissingBranchSelection => {
@@ -225,6 +236,9 @@ pub struct Machine {
     /// references resolved at edge creation (SGT-10.3).
     pub guard_params: BTreeMap<u64, (Key, Key)>,
     next_guard_param_id: u64,
+    /// The timer wheel (P8: the only clock). Armed on state entry for
+    /// transitions with timing; fired by `advance_time`.
+    pub wheel: crate::timer::TimerWheel,
 }
 
 impl Machine {
@@ -255,14 +269,45 @@ impl Machine {
             cancellations: BTreeMap::new(),
             guard_params: BTreeMap::new(),
             next_guard_param_id: 0,
+            wheel: crate::timer::TimerWheel::new(),
         }
     }
 
-    /// Advance journal time (timer wheel's job — T-205; deterministic input).
-    pub fn advance_time(&mut self, to_us: JournalUs) {
+    /// Advance journal time and fire due timers (T-205 — P8: the wheel is
+    /// the only clock).
+    pub fn advance_time(&mut self, to_us: JournalUs) -> Vec<crate::timer::Due> {
+        let due = self.wheel.advance(to_us);
         if to_us > self.logical_us {
             self.logical_us = to_us;
         }
+        let mut fired = Vec::new();
+        for d in due {
+            match d.kind.clone() {
+                crate::timer::TimerKind::Deadline { on_deadline } => {
+                    // State mismatch (node already moved) drops silently;
+                    // REQUIREMENTS_UNMET is observable, not fatal. Anything
+                    // else is a schema/model bug surfaced loudly.
+                    match self.fire_derived(
+                        d.node,
+                        &on_deadline,
+                        ActorClass::Timer,
+                        String::from("timer"),
+                    ) {
+                        Ok(_) => fired.push(d),
+                        Err(DispatchError::StateMismatch { .. }) => {}
+                        Err(DispatchError::RequirementsUnmet { .. }) => {}
+                        Err(e) => panic!("timer deadline dispatch failed: {e}"),
+                    }
+                }
+                other => fired.push(crate::timer::Due {
+                    node: d.node,
+                    transition: d.transition,
+                    kind: other,
+                    armed_us: d.armed_us,
+                }),
+            }
+        }
+        fired
     }
 
     pub fn logical_us(&self) -> JournalUs {
@@ -548,6 +593,16 @@ impl Machine {
             return Err(DispatchError::RequirementsUnmet { failing });
         }
 
+        // Lag gate (SGT-9.4): the transition MAY fire no earlier than
+        // from-entry + lag_ms.
+        if let Some(lag) = t.timing.lag_ms
+            && !self.wheel.lag_ok(node, transition_key, self.logical_us)
+        {
+            return Err(DispatchError::LagNotElapsed {
+                transition: transition_key.clone(),
+                lag_ms: lag,
+            });
+        }
         // FSM motion (declared-only, ranks, absorbing — T-201).
         let allowed = self.fsm.check_motion(&model_key, &t.from, &t.to)?;
         let to_code = allowed.to.code;
@@ -623,6 +678,7 @@ impl Machine {
         self.arrays
             .set_state(node, to_code)
             .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+        self.rearm_timers(node, &allowed.to.key)?;
 
         let record = ActionRecord {
             lsn: None, // sequencer assigns (tx layer)
@@ -884,10 +940,20 @@ impl Machine {
         if !failing.is_empty() {
             return Err(DispatchError::RequirementsUnmet { failing });
         }
+        // Lag gate for derived motions too (timer fires respect lags).
+        if let Some(lag) = t.timing.lag_ms
+            && !self.wheel.lag_ok(node, transition_key, self.logical_us)
+        {
+            return Err(DispatchError::LagNotElapsed {
+                transition: transition_key.clone(),
+                lag_ms: lag,
+            });
+        }
         let allowed = self.fsm.check_motion(&model_key, &t.from, &t.to)?;
         self.arrays
             .set_state(node, allowed.to.code)
             .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+        self.rearm_timers(node, &allowed.to.key)?;
         let record = ActionRecord {
             lsn: None,
             node,
@@ -906,6 +972,39 @@ impl Machine {
             spawned: None,
             cancelled: Vec::new(),
         })
+    }
+
+    /// After a state motion to `new_state_key`: cancel timers from the old
+    /// state, arm timers for transitions leaving `new_state_key` that carry
+    /// timing (SPEC-01 §9: arming = entering the from-state).
+    fn rearm_timers(&mut self, node: NodeId, new_state_key: &Key) -> Result<(), DispatchError> {
+        self.wheel.cancel_node(node);
+        let type_code = self.arrays.type_of(node);
+        let ntk = self
+            .node_type_key(type_code)
+            .ok_or_else(|| DispatchError::UnknownNodeType {
+                key: key_of_code(type_code),
+            })?
+            .clone();
+        let model_key = self.node_type_model[&ntk].clone();
+        let now = self.logical_us;
+        for (tk, t) in &self.transitions {
+            if t.model == model_key && &t.from == new_state_key {
+                if let Some(lag) = t.timing.lag_ms {
+                    self.wheel
+                        .arm_lag(node, tk, lag, now)
+                        .map_err(|e| DispatchError::Engine(EngineError::Timers(e)))?;
+                }
+                if let (Some(deadline), Some(on_deadline)) =
+                    (t.timing.deadline_ms, t.timing.on_deadline.clone())
+                {
+                    self.wheel
+                        .arm_deadline(node, tk, deadline, &on_deadline, now)
+                        .map_err(|e| DispatchError::Engine(EngineError::Timers(e)))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Register a GUARD edge with resolved params: creates the dependency
