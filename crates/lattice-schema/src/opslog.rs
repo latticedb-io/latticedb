@@ -17,7 +17,7 @@ use crate::catalog::Catalog;
 use crate::entities::*;
 use crate::key::{Key, validate_display_name};
 use crate::txn::{Deprecations, SchemaOp, SchemaState};
-use lattice_core::value::Value;
+use lattice_core::value::{RecordValue, Value};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +186,17 @@ impl W {
             Value::Enum(x) => {
                 self.u8(10);
                 self.u8(*x);
+            }
+            Value::Record(rec) => {
+                self.u8(11);
+                self.u64(rec.presence_mask());
+                self.u32(rec.field_count() as u32);
+                for i in 0..rec.field_count() {
+                    match rec.get(i) {
+                        Some(v) => self.value(v),
+                        None => self.value(&Value::Bool(false)), // masked absent
+                    }
+                }
             }
         }
     }
@@ -749,6 +760,19 @@ impl<'a> R<'a> {
             8 => Ok(Value::Duration(self.i64()?)),
             9 => Ok(Value::NodeRef(lattice_core::ids::NodeId(self.u32()?))),
             10 => Ok(Value::Enum(self.u8()?)),
+            11 => {
+                let presence = self.u64()?;
+                let count = self.u32()? as usize;
+                let mut rv = RecordValue::default();
+                for i in 0..count {
+                    let v = self.value()?;
+                    if (presence >> i) & 1 == 1 {
+                        rv.set(i, v)
+                            .map_err(|e| OpsError::InvalidEntity(e.to_string()))?;
+                    }
+                }
+                Ok(Value::Record(rv))
+            }
             other => Err(OpsError::UnknownValueTag { tag: other }),
         }
     }

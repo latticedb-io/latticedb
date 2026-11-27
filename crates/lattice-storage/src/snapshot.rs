@@ -270,13 +270,13 @@ impl<'a> Cursor<'a> {
         Ok(self.take(1)?[0])
     }
     fn u16(&mut self) -> Result<u16, SnapshotError> {
-        Ok(u16::from_le_bytes(le_bytes(&self.take(2)?)))
+        Ok(u16::from_le_bytes(le_bytes(self.take(2)?)))
     }
     fn u32(&mut self) -> Result<u32, SnapshotError> {
-        Ok(u32::from_le_bytes(le_bytes(&self.take(4)?)))
+        Ok(u32::from_le_bytes(le_bytes(self.take(4)?)))
     }
     fn u64(&mut self) -> Result<u64, SnapshotError> {
-        Ok(u64::from_le_bytes(le_bytes(&self.take(8)?)))
+        Ok(u64::from_le_bytes(le_bytes(self.take(8)?)))
     }
     fn u64_vec(&mut self, n: usize) -> Result<Vec<u64>, SnapshotError> {
         let mut out = Vec::with_capacity(n);
@@ -429,7 +429,7 @@ pub fn read_snapshot(path: &Path) -> Result<SnapshotData, SnapshotError> {
             ),
         });
     }
-    let table_pos = crc_table_start;
+    let _table_pos = crc_table_start;
     let table_pos = count_pos + 8;
     if blocks != struct_len.div_ceil(BLOCK) {
         return Err(SnapshotError::NotASnapshot {

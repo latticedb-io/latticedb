@@ -3,7 +3,7 @@
 //! The full SFT-3.1 cycle (values from parts, history from journal) lands
 //! with T-107/T-111; this slice proves structure+catalog layers byte-honest.
 
-use lattice_core::arrays::{GraphArrays, RawArrays};
+use lattice_core::arrays::GraphArrays;
 use lattice_core::ids::GraphId;
 use lattice_schema::catalog::Catalog;
 use lattice_schema::compile::compile;

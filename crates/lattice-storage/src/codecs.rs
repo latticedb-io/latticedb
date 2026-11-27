@@ -1020,3 +1020,31 @@ fn zstd_decompress(_data: &[u8]) -> Result<Vec<u8>, CodecError> {
         stage: "frame (feature off)",
     })
 }
+
+impl ColumnType {
+    /// Stable registry byte for part headers.
+    pub fn to_u8(self) -> u8 {
+        match self {
+            ColumnType::Bool => 1,
+            ColumnType::I64 => 2,
+            ColumnType::F64 => 3,
+            ColumnType::Str => 4,
+            ColumnType::Bytes => 5,
+            ColumnType::Enum => 6,
+            ColumnType::Dec => 7,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Option<ColumnType> {
+        Some(match v {
+            1 => ColumnType::Bool,
+            2 => ColumnType::I64,
+            3 => ColumnType::F64,
+            4 => ColumnType::Str,
+            5 => ColumnType::Bytes,
+            6 => ColumnType::Enum,
+            7 => ColumnType::Dec,
+            _ => return None,
+        })
+    }
+}

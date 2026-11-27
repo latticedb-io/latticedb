@@ -8,3 +8,4 @@ pub mod arrays;
 pub mod bitset;
 pub mod ids;
 pub mod value;
+pub mod value_codec;

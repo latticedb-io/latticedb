@@ -189,6 +189,8 @@ pub enum Value {
     NodeRef(NodeId),
     /// Enum dict index (u8-backed, ≤ 256 values).
     Enum(u8),
+    /// Flat record cell: field values + presence bitmask (SPEC-01 §5).
+    Record(RecordValue),
 }
 
 impl Value {
