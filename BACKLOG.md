@@ -86,6 +86,22 @@ actual chain, so cross-build decode stays correct). Activate zstd at the parts t
 M5 when the ratio/latency evidence demands; SFT-5.3's ratio bound is met by varint
 zig-zag delta-of-delta alone in the interim.
 
+**ED-11 · Actor-class model research: the MachineOnlyActorSet restriction ·
+owner-flagged 2026-11-27 · DISCUSSION AFTER M5 GATE.** SPEC-01 §9 currently pins:
+a transition with ONLY machine classes (system/timer/guard) in its actor set is
+schema-rejected (`MachineOnlyActorSet`) — engine-driven motion must declare
+EMPTY actors. This bit implementation twice (state-driver bundle T-112; dispatch
+fixture T-202). Owner observation: "we now have some pinned actors" — the model
+conflates two orthogonal concerns: (a) WHO MAY INVOKE (authorization — human/
+agent) and (b) WHAT ARMED THE TRANSITION (engine mechanics — guard/timer/system).
+Research questions for the post-M5 discussion: should (b) move to a separate
+`arming` field (transition declares its driver; actors declare only invokers)?
+Should system/timer actors be first-class invokables for agent workflows (a
+system service invoking an action)? Impact: schema entities (§9), op registry,
+compiler masks (actor mask), dispatch law, journal Action records (actor_class),
+MCP tool bindings. Any change = DEC entry + SPEC-01 §9 amendment; NOT
+implementable inside V1.
+
 **ED-10 · Compiled-mask blob is not persisted in snapshots; open always recompiles ·
 T-106 · M5 open-speed gate.** SPEC-03 §3 keeps a compiled-mask blob "for open speed,
 ignored if CRC fails → recompile". v1 writes the blob as absent and recompiles from
