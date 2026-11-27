@@ -112,8 +112,7 @@ pub struct ScramServer {
 impl ScramServer {
     /// The username from client-first (proof-validated by handle_client_final).
     pub fn username(&self) -> &str {
-        &self
-            .client_first_bare
+        self.client_first_bare
             .strip_prefix("n=")
             .and_then(|r| r.split_once(",r=").map(|(u, _)| u))
             .unwrap_or("")

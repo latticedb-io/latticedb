@@ -9,7 +9,6 @@
 
 use lattice_wire::auth::{AuthEngine, AuthError, AuthMethod, PolicyRule, PolicyTable, TlsState};
 use lattice_wire::scram::{DEFAULT_ITERATIONS, ScramVerifier};
-use std::collections::BTreeMap;
 
 fn policy() -> PolicyTable {
     PolicyTable {
@@ -76,13 +75,11 @@ impl TestClient {
     fn client_final(&self, server_first: &str) -> String {
         use lattice_wire::crypto::{base64_encode, hmac_sha256, pbkdf2_hmac_sha256, sha256};
         // parse server-first
-        let mut snonce = String::new();
         let mut salt: Vec<u8> = Vec::new();
         let mut iterations = 0u32;
         for part in server_first.split(',') {
             let (k, v) = part.split_once('=').expect("server-first parts");
             match k {
-                "r" => snonce = v.to_string(),
                 "s" => salt = lattice_wire::crypto::base64_decode(v).expect("salt b64"),
                 "i" => iterations = v.parse().expect("iterations"),
                 _ => {}

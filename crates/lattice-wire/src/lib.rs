@@ -7,6 +7,7 @@
 //! bounded queues at the sequencing point (ARCHITECTURE §8 execution model).
 
 pub mod auth;
+pub mod commands;
 pub mod crypto;
 pub mod frame;
 pub mod handshake;

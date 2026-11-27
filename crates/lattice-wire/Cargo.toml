@@ -6,6 +6,8 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+lattice-core = { path = "../lattice-core" }
+lattice-schema = { path = "../lattice-schema" }
 lattice-tx = { path = "../lattice-tx" }
 lattice-engine = { path = "../lattice-engine" }
 

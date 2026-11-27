@@ -63,7 +63,7 @@ fn wpt_3_1_negotiation_masks_to_intersection() {
 /// state; higher minor accepted; lower minor accepted.
 #[test]
 fn wpt_3_2_major_version_gate() {
-    let v2_0 = (2u32 << 16) | 0; // 2.0
+    let v2_0 = 2u32 << 16; // 2.0
     let err = process_hello(v2_0, 0, server_caps(), 300, 1 << 24).expect_err("major mismatch");
     assert!(matches!(err, HandshakeError::VersionMismatch { .. }));
     assert!(format!("{err}").contains("VERSION_MISMATCH"));

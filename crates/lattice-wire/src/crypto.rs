@@ -169,7 +169,7 @@ fn b64_value(c: u8) -> Option<u32> {
 /// RFC 4648 base64 decode (padding required; invalid chars rejected).
 pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
     let bytes = text.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);

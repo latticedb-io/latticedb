@@ -215,10 +215,7 @@ impl<S: CommandSink> Session<S> {
     /// RESUME: reattach if the token matches and is unexpired.
     pub fn resume(&mut self, token: &[u8], now_us: u64) -> Result<(), SessionError> {
         match &self.resume_token {
-            Some(t)
-                if t == token
-                    && now_us <= self.issued_us + self.resume_ttl_s as u64 * 1_000_000 =>
-            {
+            Some(t) if t == token && now_us <= self.issued_us + self.resume_ttl_s * 1_000_000 => {
                 Ok(())
             }
             _ => Err(SessionError::ResumeExpired),

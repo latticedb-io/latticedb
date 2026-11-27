@@ -109,6 +109,11 @@ impl TlvMap {
         self.values.is_empty()
     }
 
+    /// Consume into the raw tag→value map (command layer's tag lookup).
+    pub fn into_owned(self) -> BTreeMap<u16, Vec<u8>> {
+        self.values
+    }
+
     /// Encode: `[u16 tag][u32 len][value]` per TLV, tag order = BTreeMap
     /// (deterministic).
     pub fn encode(&self) -> Vec<u8> {
