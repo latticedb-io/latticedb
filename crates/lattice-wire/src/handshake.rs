@@ -167,7 +167,7 @@ pub fn parse_proxy_v2_header(header: &[u8]) -> Result<String, HandshakeError> {
         }
     };
     // PROXY v2: length covers src_addr + dst_addr + src_port + dst_port.
-    let declared = u16::from_le_bytes(header[2..4].try_into().expect("2")) as usize;
+    let declared = u16::from_le_bytes(le_bytes(&header[2..4])) as usize;
     let expected_len = addr_len * 2 + 4; // both families: two 2-byte ports
     if declared != expected_len {
         return Err(HandshakeError::ProxyV2Malformed {
@@ -218,7 +218,7 @@ pub fn strip_proxy_v2(stream_head: &[u8]) -> Result<(String, usize), HandshakeEr
     }
     let peer = parse_proxy_v2_header(&stream_head[12..])?;
     // total consumed = signature(12) + 4 + declared length
-    let declared = u16::from_le_bytes(stream_head[14..16].try_into().expect("2")) as usize;
+    let declared = u16::from_le_bytes(le_bytes(&stream_head[14..16])) as usize;
     Ok((peer, 12 + 4 + declared))
 }
 
