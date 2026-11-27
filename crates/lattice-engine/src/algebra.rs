@@ -227,13 +227,13 @@ pub fn validate_guard_params(
             reference: format!("tau={tau}"),
         });
     }
-    if let Some(p) = predicate {
-        if !rules.contains_key(p) {
-            return Err(ParamError::UnresolvedReference {
-                kind: "GUARD",
-                reference: format!("predicate={p}"),
-            });
-        }
+    if let Some(p) = predicate
+        && !rules.contains_key(p)
+    {
+        return Err(ParamError::UnresolvedReference {
+            kind: "GUARD",
+            reference: format!("predicate={p}"),
+        });
     }
     Ok(KindParams::Guard {
         sigma: sigma.clone(),

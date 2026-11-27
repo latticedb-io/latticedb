@@ -200,6 +200,8 @@ impl From<EngineError> for DispatchError {
 pub enum EngineErrorBridge {}
 
 /// The semantics-engine runtime: arrays + FSM + cells + compiled epoch.
+/// `Clone` supports building fresh fixtures per property-test run.
+#[derive(Clone)]
 pub struct Machine {
     pub arrays: GraphArrays,
     pub fsm: FsmRegistry,
@@ -218,6 +220,11 @@ pub struct Machine {
     logical_us: JournalUs,
     /// cancellation reasons (observability; journal-adjacent record).
     cancellations: BTreeMap<u32, String>,
+    /// GUARD edge params: edge_id → (sigma, tau). The edge rides in the
+    /// arrays (kind = GUARD, aux = this map's key); params are schema-level
+    /// references resolved at edge creation (SGT-10.3).
+    pub guard_params: BTreeMap<u64, (Key, Key)>,
+    next_guard_param_id: u64,
 }
 
 impl Machine {
@@ -246,6 +253,8 @@ impl Machine {
             cells: BTreeMap::new(),
             logical_us: 0,
             cancellations: BTreeMap::new(),
+            guard_params: BTreeMap::new(),
+            next_guard_param_id: 0,
         }
     }
 
@@ -721,6 +730,211 @@ impl Machine {
 
     pub fn cancellation_reason(&self, node: NodeId) -> Option<&String> {
         self.cancellations.get(&node.0)
+    }
+
+    /// Compiled attr id lookup (propagation read-set indexing).
+    pub fn compiled_attr_id(&self, key: &Key) -> Option<AttrId> {
+        self.compiled.attr_ids.get(key).copied()
+    }
+
+    /// Read-only access to the compiled epoch (read-set inversion etc.).
+    pub fn compiled_ref(&self) -> &Compiled {
+        &self.compiled
+    }
+
+    /// A node's current state KEY (SoA u8 → model declaration order).
+    pub fn state_key_of(&self, node: NodeId) -> Result<Key, DispatchError> {
+        let type_code = self.arrays.type_of(node);
+        let ntk = self
+            .node_type_key(type_code)
+            .ok_or_else(|| DispatchError::UnknownNodeType {
+                key: key_of_code(type_code),
+            })?
+            .clone();
+        let model_key = self.node_type_model[&ntk].clone();
+        let model = self.compiled.models.get(&model_key).ok_or_else(|| {
+            DispatchError::Engine(EngineError::UnknownModel {
+                model: model_key.clone(),
+            })
+        })?;
+        let code = self.arrays.state_of(node) as usize;
+        let Some((skey, _, _)) = model.states.get(code) else {
+            return Err(corrupt_state_code(model_key.clone(), code as u8));
+        };
+        Ok(skey.clone())
+    }
+
+    /// Set a node's state by KEY (MIRROR: copies a state across models —
+    /// skips when the target model has no matching state key).
+    pub fn set_state_by_key(&mut self, node: NodeId, state_key: &Key) -> Result<(), DispatchError> {
+        let type_code = self.arrays.type_of(node);
+        let ntk = self
+            .node_type_key(type_code)
+            .ok_or_else(|| DispatchError::UnknownNodeType {
+                key: key_of_code(type_code),
+            })?
+            .clone();
+        let model_key = self.node_type_model[&ntk].clone();
+        let code = self
+            .compiled
+            .models
+            .get(&model_key)
+            .and_then(|m| {
+                m.states
+                    .iter()
+                    .position(|(k, _, _)| k == state_key)
+                    .map(|i| i as u8)
+            })
+            .ok_or_else(|| EngineError::UnknownState {
+                model: model_key,
+                state: state_key.clone(),
+            })?;
+        self.arrays
+            .set_state(node, code)
+            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))
+    }
+
+    /// GUARD edge params resolved: does this guard edge (source → target)
+    /// have sigma == source's current state? Returns tau if armed.
+    pub fn guard_tau_for(&self, source: NodeId, target: NodeId, source_state: &Key) -> Option<Key> {
+        for eid in self.arrays.dep_out_ids(source) {
+            let Some(rec) = self.arrays.edge(*eid) else {
+                continue;
+            };
+            if rec.kind != crate::dispatch::kinds::GUARD || rec.dst != target {
+                continue;
+            }
+            if let Some((sigma, tau)) = self.guard_params.get(&(rec.aux as u64))
+                && sigma == source_state
+            {
+                return Some(tau.clone());
+            }
+        }
+        None
+    }
+
+    /// Derived motion (author = guard/timer): skips the actor law (engine
+    /// authors are not invokers), keeps requirement checks and FSM motion.
+    pub fn fire_derived(
+        &mut self,
+        node: NodeId,
+        transition_key: &Key,
+        author: ActorClass,
+        subject: impl Into<String>,
+    ) -> Result<ActionOutcome, DispatchError> {
+        let t = self
+            .transitions
+            .get(transition_key)
+            .ok_or_else(|| DispatchError::UnknownTransition {
+                key: transition_key.clone(),
+            })?
+            .clone();
+        if !t.actors.is_empty() {
+            // Derived motion fires ONLY engine-armed (empty-actor) transitions.
+            return Err(DispatchError::NotInvokable {
+                transition: transition_key.clone(),
+                actor: author,
+            });
+        }
+        // State match + terminal + requirements + FSM (same as apply_action
+        // minus the actor gate).
+        let type_code = self.arrays.type_of(node);
+        let ntk = self
+            .node_type_key(type_code)
+            .ok_or_else(|| DispatchError::UnknownNodeType {
+                key: key_of_code(type_code),
+            })?
+            .clone();
+        let model_key = self.node_type_model[&ntk].clone();
+        if model_key != t.model {
+            return Err(DispatchError::UnknownTransition {
+                key: transition_key.clone(),
+            });
+        }
+        let state_code = self.arrays.state_of(node);
+        let model =
+            self.compiled
+                .models
+                .get(&model_key)
+                .ok_or_else(|| EngineError::UnknownModel {
+                    model: model_key.clone(),
+                })?;
+        let Some((actual, success_terminal, failure_terminal)) =
+            model.states.get(state_code as usize)
+        else {
+            return Err(corrupt_state_code(model_key.clone(), state_code));
+        };
+        if &t.from != actual {
+            return Err(DispatchError::StateMismatch {
+                expected_from: t.from.clone(),
+                actual: actual.clone(),
+            });
+        }
+        if *success_terminal || *failure_terminal {
+            return Err(DispatchError::Terminal {
+                state: actual.clone(),
+            });
+        }
+        let failing: Vec<Key> = t
+            .requirements
+            .iter()
+            .filter(|r| !self.eval_rule(r, node))
+            .cloned()
+            .collect();
+        if !failing.is_empty() {
+            return Err(DispatchError::RequirementsUnmet { failing });
+        }
+        let allowed = self.fsm.check_motion(&model_key, &t.from, &t.to)?;
+        self.arrays
+            .set_state(node, allowed.to.code)
+            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+        let record = ActionRecord {
+            lsn: None,
+            node,
+            transition: transition_key.clone(),
+            actor_class: author,
+            subject: subject.into(),
+            payload: None,
+            from: allowed.from.key.clone(),
+            to: allowed.to.key.clone(),
+        };
+        Ok(ActionOutcome {
+            from: allowed.from.key,
+            to: allowed.to.key,
+            record,
+            engine_facts: Vec::new(),
+            spawned: None,
+            cancelled: Vec::new(),
+        })
+    }
+
+    /// Register a GUARD edge with resolved params: creates the dependency
+    /// edge (kind GUARD) and stores (sigma, tau). Returns the aux id.
+    pub fn add_guard_edge(
+        &mut self,
+        source: NodeId,
+        target: NodeId,
+        sigma: &Key,
+        tau: &Key,
+    ) -> Result<u32, DispatchError> {
+        let aux = self.next_guard_param_id as u32;
+        self.next_guard_param_id += 1;
+        self.guard_params
+            .insert(aux as u64, (sigma.clone(), tau.clone()));
+        let eid = self
+            .arrays
+            .add_edge(source, target, crate::dispatch::kinds::GUARD, aux)
+            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+        let _ = eid;
+        Ok(aux)
+    }
+
+    /// Register a MIRROR edge.
+    pub fn add_mirror_edge(&mut self, source: NodeId, target: NodeId) -> Result<(), DispatchError> {
+        self.arrays
+            .add_edge(source, target, crate::dispatch::kinds::MIRROR, 0)
+            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+        Ok(())
     }
 }
 
