@@ -29,3 +29,41 @@ already shaped by the frozen contract:
 
 Any v2 replication design starts from this seam; no V1 work is authorized.
 
+---
+
+## Engineering debt register (tracked deferrals from M0/M1 implementation)
+
+> Format: `ED-NN · item · origin · target gate`. Each item must be resolved or
+> re-confirmed at its target gate; the register is reviewed at every milestone tag.
+
+**ED-01 · Autodetect disk-class probing is stubbed (`Hdd` conservative) · T-001 · M4
+packaging.** Host probes CPU + RAM only; disk class needs M4 deployment tooling
+(cgroup-aware RAM accounting also lands there). Config-level determinism (WPT-10.4)
+already covered by `HostSpecs` being an explicit input.
+
+**ED-02 · WPT-10.3 / WPT-10.6 wire-level variants deferred · T-001 · M3 (T-30x).**
+Config-level semantics fully tested now; the behavioral halves (journal equivalence
+under extreme tunables; live keepalive vs restart-required `max_frame`) need the wire
+stack and land with M3 acceptance.
+
+**ED-03 · Compiler recompiles from scratch per epoch · T-103 · M2/M5 performance gate.**
+ARCH §7 says "the compiler rebuilds masks incrementally". Current `compile()` is a pure
+full rebuild (deterministic, tested for recompile identity). Incremental rebuild is a
+performance optimization — measure first via the admin metrics plane, then optimize if
+schema-epoch churn is hot.
+
+**ED-04 · CSR mutations are O(n) vector inserts/removes · T-101 · M5 compaction-under-
+load gate.** Correct + invariant-tested; staging buffers and amortized structures
+(slot allocation, free lists) are a measured-optimization concern, per P11 and the
+no-hardcoded-law (sizing via config).
+
+**ED-05 · Deleted nodes keep their array slots (tombstones, never reclaimed) · T-101 ·
+M5.** Memory is reclaimed only via snapshot rebuild. Acceptable while node churn is
+low; slot compaction must be replay-deterministic — design note required before any
+change (determinism oracle gate).
+
+**ED-06 · Enum-deprecation registries are catalog-level maps · T-104 · M1 review.**
+`deprecated_enum_values` / `deprecated_states` / `deprecated_node_types` live beside
+the catalog rather than inside entities — keeps SPEC-01 §2–§15 entity shapes frozen.
+Serialize with the catalog snapshot (T-106); revisit placement only via DEC entry.
+

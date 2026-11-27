@@ -408,16 +408,16 @@ pub fn compile(catalog: &Catalog) -> Result<Compiled, SchemaError> {
                 }
             }
             let (from, to) = &edges[e_idx];
-            if let (Some(rf), Some(rt)) = (red.get(from).copied(), red.get(to).copied()) {
-                if rt <= rf {
-                    return Err(SchemaError::BackwardRank {
-                        model: mkey.clone(),
-                        from: from.clone(),
-                        to: to.clone(),
-                        from_rank: rf,
-                        to_rank: rt,
-                    });
-                }
+            if let (Some(rf), Some(rt)) = (red.get(from).copied(), red.get(to).copied())
+                && rt <= rf
+            {
+                return Err(SchemaError::BackwardRank {
+                    model: mkey.clone(),
+                    from: from.clone(),
+                    to: to.clone(),
+                    from_rank: rf,
+                    to_rank: rt,
+                });
             }
         }
     }

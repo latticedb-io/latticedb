@@ -91,6 +91,9 @@ pub enum SchemaError {
         model: Key,
         state: Key,
     },
+    /// Guarded-evolution rejection — details in the paired
+    /// [`crate::txn::R13Violation`] (rule id + live-reference path).
+    R13InUse,
 }
 
 impl fmt::Display for SchemaError {
@@ -171,6 +174,12 @@ impl fmt::Display for SchemaError {
                 write!(
                     f,
                     "model `{model}`: state `{state}` is not reachable from the initial state"
+                )
+            }
+            SchemaError::R13InUse => {
+                write!(
+                    f,
+                    "R13 guarded-evolution rejection (rule id and live-reference path attached)"
                 )
             }
         }
