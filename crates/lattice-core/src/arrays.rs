@@ -474,8 +474,10 @@ impl GraphArrays {
                     "edge-id runs ascending"
                 );
                 for &e in run {
-                    let rec = self.edges.get(e.0 as usize).expect("csr edge id in table");
-                    assert!(rec.alive, "csr references only live edges");
+                    match self.edges.get(e.0 as usize) {
+                        Some(rec) => assert!(rec.alive, "csr references only live edges"),
+                        None => panic!("csr edge id {e} missing from edge table"),
+                    }
                 }
             }
         }

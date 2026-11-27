@@ -8,7 +8,7 @@
 use std::fs;
 use std::process::ExitCode;
 
-use latticedb::config::autodetect::{DiskClass, HostSpecs, autodetect, autodetect_validated};
+use latticedb::config::autodetect::{DiskClass, HostSpecs, autodetect};
 use latticedb::config::parse_config;
 
 fn main() -> ExitCode {
@@ -82,10 +82,4 @@ fn probe_ram_gib() -> u32 {
         }
     }
     1
-}
-
-/// Kept for embedders/tests: full validation pipeline entry point.
-#[allow(dead_code)]
-fn _validate_generated(specs: &HostSpecs) -> bool {
-    autodetect_validated(specs).is_ok()
 }

@@ -108,7 +108,10 @@ pub fn autodetect(specs: &HostSpecs) -> Result<String, super::ConfigError> {
     };
 
     cfg.validate()?;
-    Ok(toml::to_string(&cfg).expect("serializing a validated config cannot fail"))
+    // Deterministic bytes: toml serializes struct fields in declaration order.
+    toml::to_string(&cfg).map_err(|e| super::ConfigError {
+        message: format!("config serialization failed: {e}"),
+    })
 }
 
 /// Validate generated text round-trips through the strict parser.
