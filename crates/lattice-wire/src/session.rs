@@ -99,6 +99,16 @@ pub trait CommandSink {
     fn read(&mut self, _frame_type: FrameType, _payload: &[u8]) -> Option<ReadOutcome> {
         None
     }
+
+    /// Route WATCH_SUB / WATCH_UNSUB (SPEC-02 §9). Default: unhandled
+    /// (codec-level ACK, the pre-T-309 behavior).
+    fn watch(
+        &mut self,
+        _frame_type: FrameType,
+        _payload: &[u8],
+    ) -> Option<Result<Vec<u8>, String>> {
+        None
+    }
 }
 
 /// Read outcome from the sink: ACK payload or a DATA_ARROW payload.
@@ -258,9 +268,17 @@ impl<S: CommandSink> Session<S> {
             FrameType::TxnCommit => self.on_txn_end(true),
             FrameType::TxnRollback => self.on_txn_end(false),
             FrameType::WatchSub | FrameType::WatchUnsub => {
-                // Watch subscriptions: registered, events flow with credit
-                // sub-limit (M2-level: acknowledged; stream wiring is T-309).
-                Ok(self.ack(frame.frame_type, &frame.payload, 0))
+                match self.sink.watch(frame.frame_type, &frame.payload) {
+                    // T-309: host-routed (watch table); errors become
+                    // ERROR frames with the code + hint.
+                    Some(Ok(payload)) => {
+                        let request_id = extract_request_id(&frame.payload).unwrap_or(0);
+                        Ok(self.ack_with(request_id, payload))
+                    }
+                    Some(Err(e)) => Ok(Reply::Frame(Frame::new(FrameType::Error, e.into_bytes()))),
+                    // M2-level codec ACK (pre-T-309 behavior).
+                    None => Ok(self.ack(frame.frame_type, &frame.payload, 0)),
+                }
             }
             ft if is_write_command(ft) => self.on_write_command(frame, now_us),
             ft if is_read_command(ft) => match self.sink.read(ft, &frame.payload) {

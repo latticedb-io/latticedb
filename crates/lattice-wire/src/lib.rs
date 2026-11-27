@@ -15,3 +15,4 @@ pub mod reads;
 pub mod scram;
 pub mod session;
 pub mod tlv;
+pub mod watches;
