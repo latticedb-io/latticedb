@@ -67,3 +67,14 @@ change (determinism oracle gate).
 the catalog rather than inside entities — keeps SPEC-01 §2–§15 entity shapes frozen.
 Serialize with the catalog snapshot (T-106); revisit placement only via DEC entry.
 
+**ED-07 · Schema-txn validation clones the full schema state per op · T-104 · M2/M5
+performance gate.** `apply_op` works on a trial clone so rejected ops never pollute
+subsequent validation and every accepted prefix compiles (P3). Schema txns are rare;
+measure via admin metrics before optimizing (delta-apply or undo-log).
+
+**ED-08 · R13 checks are catalog-level; live-cell counts belong to the tx engine ·
+T-104 · M2 (T-207 validator suite).** Schema-level R13 scans cover catalog references
+(rules, defaults, transitions, grants, locks). Cell-level usage (enum values in live
+cells, occupied states) is enforced by the engine's R6/R13 validators at sequencing —
+the two layers compose; the split is documented here so the M2 suite tests both.
+
