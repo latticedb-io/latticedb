@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 lattice-core = { path = "../lattice-core" }
 lattice-schema = { path = "../lattice-schema" }
+arrow = { version = "60.2.0", default-features = false, features = ["ipc"] }
 lattice-tx = { path = "../lattice-tx" }
 lattice-engine = { path = "../lattice-engine" }
 

@@ -92,6 +92,19 @@ pub trait CommandSink {
         payload: &[u8],
         in_txn: bool,
     ) -> Result<Vec<u8>, String>;
+
+    /// Route one read frame (SPEC-02 §8): `Some(frame_type, payload_bytes,
+    /// reply_is_data)` — the host answers with ACK or DATA_ARROW. Default:
+    /// unhandled (codec-level ACK, the pre-T-308 behavior).
+    fn read(&mut self, _frame_type: FrameType, _payload: &[u8]) -> Option<ReadOutcome> {
+        None
+    }
+}
+
+/// Read outcome from the sink: ACK payload or a DATA_ARROW payload.
+pub enum ReadOutcome {
+    Ack(Vec<u8>),
+    Data(Vec<u8>),
 }
 
 /// Session state: one per connection.
@@ -250,9 +263,26 @@ impl<S: CommandSink> Session<S> {
                 Ok(self.ack(frame.frame_type, &frame.payload, 0))
             }
             ft if is_write_command(ft) => self.on_write_command(frame, now_us),
+            ft if is_read_command(ft) => match self.sink.read(ft, &frame.payload) {
+                Some(ReadOutcome::Ack(payload)) => {
+                    let request_id = extract_request_id(&frame.payload).unwrap_or(0);
+                    Ok(self.ack_with(request_id, payload))
+                }
+                Some(ReadOutcome::Data(payload)) => {
+                    let request_id = extract_request_id(&frame.payload).unwrap_or(0);
+                    Ok(Reply::Frame(requested_frame(
+                        FrameType::DataArrow,
+                        payload,
+                        request_id,
+                    )))
+                }
+                None => {
+                    // Read/meta + unknown: acknowledged at codec level.
+                    Ok(self.ack(frame.frame_type, &frame.payload, 0))
+                }
+            },
             _ => {
-                // Read/meta + unknown: acknowledged at codec level; real
-                // routing lands with T-308's cursor integration.
+                // Unknown frames: acknowledged at codec level.
                 Ok(self.ack(frame.frame_type, &frame.payload, 0))
             }
         }
@@ -352,6 +382,31 @@ fn is_write_command(ft: FrameType) -> bool {
             | FrameType::Grant
             | FrameType::Revoke
     )
+}
+
+fn is_read_command(ft: FrameType) -> bool {
+    matches!(
+        ft,
+        FrameType::Snapshot
+            | FrameType::NodeRead
+            | FrameType::CursorOpen
+            | FrameType::CursorFetch
+            | FrameType::CursorClose
+            | FrameType::Blockers
+            | FrameType::History
+            | FrameType::SchemaPlan
+    )
+}
+
+/// Result frame with the request_id echoed as the first TLV tag
+/// (pipelining correlation, WPT-2.3 semantics on DATA_ARROW too).
+fn requested_frame(frame_type: FrameType, mut payload: Vec<u8>, request_id: u64) -> Frame {
+    let mut body = Vec::new();
+    body.extend_from_slice(&TAG_REQUEST_ID_LE);
+    body.extend_from_slice(&8u32.to_le_bytes());
+    body.extend_from_slice(&request_id.to_le_bytes());
+    body.append(&mut payload);
+    Frame::new(frame_type, body)
 }
 
 fn extract_request_id(payload: &[u8]) -> Option<u64> {

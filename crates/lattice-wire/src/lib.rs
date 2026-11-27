@@ -11,6 +11,7 @@ pub mod commands;
 pub mod crypto;
 pub mod frame;
 pub mod handshake;
+pub mod reads;
 pub mod scram;
 pub mod session;
 pub mod tlv;
