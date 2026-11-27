@@ -61,15 +61,15 @@
 
 ## M3 — wire + concurrency + SDK + MCP
 
-| ID | Task | Spec refs | Acceptance | Deps |
-|---|---|---|---|---|
-| T-301 | Framing, type registry, TLV | SPEC-02 §2 | WPT-2.1–2.3 | T-111 |
-| T-302 | Handshake, capabilities, PROXY v2 | SPEC-02 §3 | WPT-3.1–3.4 | T-301 |
-| T-303 | Auth: policy table, SCRAM, cert, UDS | SPEC-02 §4 | WPT-4.1–4.5 | T-302 |
-| T-304 | Sessions, pipelining, TXN frames | SPEC-02 §5 | WPT-5.1–5.2 | T-302 |
-| T-305 | Resume, keepalive, cancellation | SPEC-02 §5 | WPT-5.3–5.6 | T-304 |
-| T-306 | Credit flow control | SPEC-02 §6 | WPT-6.1–6.2 | T-304 |
-| T-307 | Write commands + hint law | SPEC-02 §7 | WPT-7.1–7.5 | T-304, M2 |
+| ID | Task | Spec refs | Acceptance | Deps | Status |
+|---|---|---|---|---|---|
+| T-301 | Framing, type registry, TLV | SPEC-02 §2 | WPT-2.1–2.3 | T-111 | done |
+| T-302 | Handshake, capabilities, PROXY v2 | SPEC-02 §3 | WPT-3.1–3.4 | T-301 | done |
+| T-303 | Auth: policy table, SCRAM, cert, UDS | SPEC-02 §4 | WPT-4.1–4.5 | T-302 | done |
+| T-304 | Sessions, pipelining, TXN frames | SPEC-02 §5 | WPT-5.1–5.2 | T-302 | done |
+| T-305 | Resume, keepalive, cancellation | SPEC-02 §5 | WPT-5.3–5.6 | T-304 | done |
+| T-306 | Credit flow control | SPEC-02 §6 | WPT-6.1–6.2 | T-304 | done |
+| T-307 | Write commands + hint law | SPEC-02 §7 | WPT-7.1–7.5 | T-304, M2 | done |
 | T-308 | Reads, cursors, time travel | SPEC-02 §8 | WPT-8.1–8.5 | T-307 |
 | T-309 | Watches | SPEC-02 §9 | WPT-9.1–9.3 | T-305, T-308 |
 | T-310 | Concurrent subtree-locked writers + sequencer | ARCH §8 | confluence under parallel load; WPT-5.1 parallel variant | T-307 |
