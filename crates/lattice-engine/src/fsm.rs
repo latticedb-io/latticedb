@@ -53,6 +53,8 @@ pub enum EngineError {
         model: Key,
         state: Key,
     },
+    /// Structural-array failure inside effects (spawn/cancel).
+    Arrays(lattice_core::arrays::ArrayError),
 }
 
 impl fmt::Display for EngineError {
@@ -84,11 +86,18 @@ impl fmt::Display for EngineError {
                     "model `{model}`: state `{state}` is terminal — terminals are absorbing"
                 )
             }
+            EngineError::Arrays(e) => write!(f, "arrays: {e}"),
         }
     }
 }
 
 impl std::error::Error for EngineError {}
+
+impl From<lattice_core::arrays::ArrayError> for EngineError {
+    fn from(e: lattice_core::arrays::ArrayError) -> Self {
+        EngineError::Arrays(e)
+    }
+}
 
 /// One state's runtime info.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +119,12 @@ pub struct RuntimeModel {
     pub states: BTreeMap<Key, StateInfo>,
     /// Declared motions: (from, to) → transition keys.
     pub motions: BTreeMap<(Key, Key), Vec<Key>>,
+}
+
+fn missing_rank(model: &Key, state: &Key) -> ! {
+    panic!(
+        "registry invariant: finalizing model {model:?} state {state:?} carries no rank — compiler/registry desync"
+    );
 }
 
 impl RuntimeModel {
@@ -201,7 +216,13 @@ impl FsmRegistry {
             // Here we take the lexicographically first key for the verdict —
             // deterministic and rank/terminal checks are pair-level anyway.
         }
-        let transition = keys.iter().min().expect("checked non-empty").clone();
+        let Some(transition) = keys.iter().min().cloned() else {
+            return Err(EngineError::UndeclaredMotion {
+                model: model.clone(),
+                from: from.clone(),
+                to: to.clone(),
+            });
+        };
 
         if m.class == ModelClass::Finalizing {
             if fi.success_terminal || fi.failure_terminal {
@@ -210,10 +231,11 @@ impl FsmRegistry {
                     state: from.clone(),
                 });
             }
-            let (fr, tr) = (
-                fi.rank.expect("finalizing states carry ranks"),
-                ti.rank.expect("finalizing states carry ranks"),
-            );
+            // Registry invariant: finalizing states always carry ranks
+            // (compiler-guaranteed). A violation is a loud panic, never a
+            // silent pass.
+            let fr = fi.rank.unwrap_or_else(|| missing_rank(model, from));
+            let tr = ti.rank.unwrap_or_else(|| missing_rank(model, to));
             if tr <= fr {
                 return Err(EngineError::BackwardRank {
                     model: model.clone(),
@@ -248,10 +270,11 @@ impl RuntimeModel {
                 },
             );
         }
-        let initial = states
-            .get(&model.initial)
-            .cloned()
-            .expect("compiler validated initial exists and is non-terminal");
+        let Some(initial) = states.get(&model.initial).cloned() else {
+            // Compiler-guaranteed; a violation is a loud registry-construction
+            // bug, never a silent default.
+            panic!("registry invariant: initial state missing after compile");
+        };
         RuntimeModel {
             class: model.class,
             initial,

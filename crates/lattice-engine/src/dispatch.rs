@@ -1,0 +1,791 @@
+//! Transition/action dispatch (SPEC-01 §9, T-202): the engine's write path
+//! for state motion.
+//!
+//! - **Requirements**: a transition is enabled iff all its NamedRules hold
+//!   at evaluation; `REQUIREMENTS_UNMET` lists the failing rule keys and
+//!   the live enabled-action index flips (SGT-9.1/9.2).
+//! - **Actors**: non-empty actor classes ⇒ invokable by those classes;
+//!   machine classes (system/timer/guard) never user-invokable.
+//! - **Effects v1** (micro-decision 8): `spawn {instance_of}` — engine-
+//!   authored child creation (journal AddVertex in the same txn);
+//!   `select_branch` — cancels XOR siblings; `cancel_siblings` reuses the
+//!   machinery. Cancellation reasons are recorded (SGT-9.6).
+//! - **Terminals are absorbing** (R5): an action targeting a terminal-state
+//!   node is rejected `TERMINAL` (SGT-9.7).
+//! - **Action journal record**: `{lsn, node, transition, actor_class,
+//!   subject, payload?, from, to}` — the only way state motion enters
+//!   history. The engine emits the record; the sequencer assigns the LSN.
+//!
+//! Cell store: uniform `(node, attr, k) → (value, lsn, written_us)` —
+//! scalar = column with fixed k=0 (SPEC-03 §9.1). `logical_us` is the
+//! journal-time domain (P8: no wall clock) — the timer wheel (T-205)
+//! advances it; cell staleness (`epoch_gte`) reads it.
+
+use crate::fsm::{EngineError, FsmRegistry};
+use lattice_core::arrays::GraphArrays;
+use lattice_core::ids::{AttrId, KeyIndex, Lsn, NodeId};
+use lattice_core::value::Value;
+use lattice_schema::catalog::Catalog;
+use lattice_schema::compile::Compiled;
+use lattice_schema::entities::*;
+use lattice_schema::key::Key;
+use std::collections::BTreeMap;
+use std::fmt;
+
+/// Edge-kind registry bytes (SPEC-01 §10 fixed order).
+pub mod kinds {
+    pub const AND: u8 = 1;
+    pub const OR: u8 = 2;
+    pub const KOFN: u8 = 3;
+    pub const GUARD: u8 = 4;
+    pub const INHIBIT: u8 = 5;
+    pub const XOR: u8 = 6;
+    pub const MIRROR: u8 = 7;
+    pub const WEIGHTED: u8 = 8;
+}
+
+/// Journal-time domain (logical microseconds; timer wheel is the clock, P8).
+type JournalUs = u64;
+
+/// One stored cell: value + writing LSN + journal-time of the write.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredCell {
+    pub value: Value,
+    pub lsn: Lsn,
+    pub written_us: JournalUs,
+}
+
+/// The action journal record content (the sequencer assigns `lsn`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionRecord {
+    pub lsn: Option<Lsn>,
+    pub node: NodeId,
+    pub transition: Key,
+    pub actor_class: ActorClass,
+    pub subject: String,
+    pub payload: Option<Value>,
+    pub from: Key,
+    pub to: Key,
+}
+
+/// Engine-authored facts to journal in the SAME txn as the action.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EngineFact {
+    /// spawn effect: AddVertex under the acting node, typed correctly.
+    AddVertex {
+        node: NodeId,
+        parent: NodeId,
+        node_type: Key,
+    },
+    /// select_branch/cancel_siblings: sibling cancelled with reason.
+    CancelSibling { node: NodeId, reason: String },
+}
+
+/// Outcome of a dispatched action.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionOutcome {
+    pub from: Key,
+    pub to: Key,
+    pub record: ActionRecord,
+    pub engine_facts: Vec<EngineFact>,
+    pub spawned: Option<NodeId>,
+    pub cancelled: Vec<(NodeId, String)>,
+}
+
+/// Dispatch errors — wire code mapping happens at the protocol layer (M3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DispatchError {
+    Engine(EngineError),
+    UnknownTransition {
+        key: Key,
+    },
+    UnknownNodeType {
+        key: Key,
+    },
+    UnknownRule {
+        key: Key,
+    },
+    /// Node's current state ≠ the transition's `from` (ORDER_CONFLICT family).
+    StateMismatch {
+        expected_from: Key,
+        actual: Key,
+    },
+    /// Actor class not in the transition's invokable set.
+    NotInvokable {
+        transition: Key,
+        actor: ActorClass,
+    },
+    /// R5: action targeting a terminal-state node.
+    Terminal {
+        state: Key,
+    },
+    /// SGT-9.1: requirements unmet — machine-readable failing list.
+    RequirementsUnmet {
+        failing: Vec<Key>,
+    },
+    /// select_branch: the selected branch is not XOR-connected to the node.
+    NotABranch {
+        node: NodeId,
+        selected: NodeId,
+    },
+    /// select_branch: payload must carry the selected branch as NodeRef.
+    MissingBranchSelection,
+}
+
+impl fmt::Display for DispatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DispatchError::Engine(e) => write!(f, "{e}"),
+            DispatchError::UnknownTransition { key } => write!(f, "unknown transition `{key}`"),
+            DispatchError::UnknownNodeType { key } => write!(f, "unknown node type `{key}`"),
+            DispatchError::UnknownRule { key } => write!(f, "unknown rule `{key}`"),
+            DispatchError::StateMismatch {
+                expected_from,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "state mismatch: transition fires from `{expected_from}`, node is `{actual}`"
+                )
+            }
+            DispatchError::NotInvokable { transition, actor } => {
+                write!(
+                    f,
+                    "transition `{transition}` is not invokable by actor {actor:?}"
+                )
+            }
+            DispatchError::Terminal { state } => {
+                write!(
+                    f,
+                    "TERMINAL: node is in terminal state `{state}` — absorbing"
+                )
+            }
+            DispatchError::RequirementsUnmet { failing } => {
+                write!(
+                    f,
+                    "REQUIREMENTS_UNMET: {}",
+                    failing
+                        .iter()
+                        .map(|k| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            DispatchError::NotABranch { node, selected } => {
+                write!(
+                    f,
+                    "node {selected} is not an XOR branch of decision node {node}"
+                )
+            }
+            DispatchError::MissingBranchSelection => {
+                write!(
+                    f,
+                    "select_branch effect requires the selected branch as payload NodeRef"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for DispatchError {}
+
+impl From<EngineError> for DispatchError {
+    fn from(e: EngineError) -> Self {
+        DispatchError::Engine(e)
+    }
+}
+
+/// ArrayError → EngineError bridging (structural ops inside effects).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineErrorBridge {}
+
+/// The semantics-engine runtime: arrays + FSM + cells + compiled epoch.
+pub struct Machine {
+    pub arrays: GraphArrays,
+    pub fsm: FsmRegistry,
+    compiled: Compiled,
+    /// catalog.transitions (dispatch table).
+    transitions: BTreeMap<Key, Transition>,
+    /// catalog.rules (requirement predicates).
+    rules: BTreeMap<Key, PredicateForm>,
+    /// node_type key → u16 code (BTreeMap declaration order = deterministic).
+    node_type_codes: BTreeMap<Key, u16>,
+    /// node_type key → state model key.
+    node_type_model: BTreeMap<Key, Key>,
+    /// cells: (node, attr, k) → (value, lsn, written_us).
+    cells: BTreeMap<(u32, u16, u64), StoredCell>,
+    /// journal time (P8: only the timer wheel advances this).
+    logical_us: JournalUs,
+    /// cancellation reasons (observability; journal-adjacent record).
+    cancellations: BTreeMap<u32, String>,
+}
+
+impl Machine {
+    pub fn new(arrays: GraphArrays, compiled: Compiled, catalog: &Catalog) -> Self {
+        let fsm = FsmRegistry::from_compiled(&compiled);
+        let transitions: BTreeMap<Key, Transition> = catalog.transitions.clone();
+        let rules: BTreeMap<Key, PredicateForm> = catalog
+            .rules
+            .iter()
+            .map(|(k, r)| (k.clone(), r.form.clone()))
+            .collect();
+        let mut node_type_codes = BTreeMap::new();
+        let mut node_type_model = BTreeMap::new();
+        for (i, (ntk, nt)) in catalog.node_types.iter().enumerate() {
+            node_type_codes.insert(ntk.clone(), i as u16);
+            node_type_model.insert(ntk.clone(), nt.state_model.clone());
+        }
+        Self {
+            arrays,
+            fsm,
+            compiled,
+            transitions,
+            rules,
+            node_type_codes,
+            node_type_model,
+            cells: BTreeMap::new(),
+            logical_us: 0,
+            cancellations: BTreeMap::new(),
+        }
+    }
+
+    /// Advance journal time (timer wheel's job — T-205; deterministic input).
+    pub fn advance_time(&mut self, to_us: JournalUs) {
+        if to_us > self.logical_us {
+            self.logical_us = to_us;
+        }
+    }
+
+    pub fn logical_us(&self) -> JournalUs {
+        self.logical_us
+    }
+
+    pub fn node_type_code(&self, key: &Key) -> Option<u16> {
+        self.node_type_codes.get(key).copied()
+    }
+
+    pub fn node_type_key(&self, code: u16) -> Option<&Key> {
+        self.node_type_codes
+            .iter()
+            .find(|(_, c)| **c == code)
+            .map(|(k, _)| k)
+    }
+
+    /// Write one cell (R6/R7 validations land in T-207's validator suite).
+    pub fn set_cell(
+        &mut self,
+        node: NodeId,
+        attr: &Key,
+        k: KeyIndex,
+        value: Value,
+        lsn: Lsn,
+    ) -> Result<(), DispatchError> {
+        let id = self
+            .compiled
+            .attr_ids
+            .get(attr)
+            .ok_or_else(|| DispatchError::UnknownNodeType { key: attr.clone() })?;
+        let AttrId(id) = id;
+        self.cells.insert(
+            (node.0, *id, k.0),
+            StoredCell {
+                value,
+                lsn,
+                written_us: self.logical_us,
+            },
+        );
+        Ok(())
+    }
+
+    /// Latest cell of an attr on a node (greatest k).
+    pub fn latest_cell(&self, node: NodeId, attr: &Key) -> Option<&StoredCell> {
+        let id = self.compiled.attr_ids.get(attr)?;
+        let AttrId(id) = id;
+        self.cells
+            .range((node.0, *id, 0)..=(node.0, *id, u64::MAX))
+            .next_back()
+            .map(|(_, cell)| cell)
+    }
+
+    /// Cells of an attr on a node, k-ascending.
+    fn cells_of(&self, node: NodeId, attr: &Key) -> Vec<(u64, &StoredCell)> {
+        let Some(AttrId(id)) = self.compiled.attr_ids.get(attr) else {
+            return Vec::new();
+        };
+        self.cells
+            .range((node.0, *id, 0)..=(node.0, *id, u64::MAX))
+            .filter(|((_, a, _), _)| a == id)
+            .map(|((_, _, k), cell)| (*k, cell))
+            .collect()
+    }
+
+    /// Live enabled-action index for a node: static action_index filtered by
+    /// requirements actually holding right now (SGT-9.1/9.2).
+    pub fn enabled_actions(&self, node: NodeId) -> Result<Vec<Key>, DispatchError> {
+        let type_code = self.arrays.type_of(node);
+        let ntk = self
+            .node_type_key(type_code)
+            .ok_or_else(|| DispatchError::UnknownNodeType {
+                key: key_of_code(type_code),
+            })?
+            .clone();
+        let model_key = self.node_type_model[&ntk].clone();
+        let state_code = self.arrays.state_of(node);
+        let model =
+            self.compiled
+                .models
+                .get(&model_key)
+                .ok_or_else(|| EngineError::UnknownModel {
+                    model: model_key.clone(),
+                })?;
+        let Some((state_key, _, _)) = model.states.get(state_code as usize) else {
+            return Err(corrupt_state_code(model_key.clone(), state_code));
+        };
+        let static_index = self
+            .compiled
+            .action_index
+            .get(&(ntk.clone(), state_key.clone()))
+            .cloned()
+            .unwrap_or_default();
+        let mut enabled = Vec::new();
+        for tk in static_index {
+            let t = &self.transitions[&tk];
+            if t.requirements.iter().all(|r| self.eval_rule(r, node)) {
+                enabled.push(tk);
+            }
+        }
+        Ok(enabled)
+    }
+
+    /// Evaluate a NamedRule against a node's live state (SPEC-01 §13 forms).
+    pub fn eval_rule(&self, rule: &Key, node: NodeId) -> bool {
+        match self.rules.get(rule) {
+            Some(form) => self.eval_predicate(form, node),
+            None => false,
+        }
+    }
+
+    fn eval_predicate(&self, form: &PredicateForm, node: NodeId) -> bool {
+        match form {
+            PredicateForm::AttrPresent { attr } => self.latest_cell(node, attr).is_some(),
+            PredicateForm::AttrCmp { attr, op, value }
+            | PredicateForm::LatestCmp { attr, op, value } => match self.latest_cell(node, attr) {
+                Some(cell) => value_cmp(&cell.value, op, value),
+                None => false,
+            },
+            PredicateForm::CellCountGte { attr, k } => {
+                self.cells_of(node, attr).len() >= *k as usize
+            }
+            PredicateForm::CellFieldCountGte {
+                attr,
+                field,
+                value,
+                min,
+            } => {
+                // count occurrences of `value` at record field index `field`
+                // across the attr's cells; field index = position in field
+                // name order is schema-level — at engine level the field is
+                // addressed by its declared index (compiled order). We treat
+                // `field` as the field INDEX key parsed from the name for v1
+                // (record fields carry their index in the field name grammar).
+                let target = field_index(field);
+                let mut count = 0usize;
+                for (_, cell) in self.cells_of(node, attr) {
+                    if let Value::Record(rec) = &cell.value
+                        && let Some(v) = rec.get(target)
+                        && v == value
+                    {
+                        count += 1;
+                    }
+                }
+                count >= *min as usize
+            }
+            PredicateForm::EpochGte { attr, age_us } => match self.latest_cell(node, attr) {
+                Some(cell) => self.logical_us.saturating_sub(cell.written_us) >= *age_us as u64,
+                None => false,
+            },
+            PredicateForm::ChildrenState {
+                success,
+                expect_all,
+            } => {
+                let kids = self.arrays.children_of(node);
+                if kids.is_empty() {
+                    return false;
+                }
+                let mut hits = 0usize;
+                for child in kids {
+                    if self.child_in_terminal_class(*child, *success) {
+                        hits += 1;
+                    }
+                }
+                if *expect_all {
+                    hits == kids.len()
+                } else {
+                    hits > 0
+                }
+            }
+            PredicateForm::SetMember { attr, values } => match self.latest_cell(node, attr) {
+                Some(cell) => values.iter().any(|v| v == &cell.value),
+                None => false,
+            },
+            PredicateForm::StrEq { attr, value } => match self.latest_cell(node, attr) {
+                Some(cell) => matches!(&cell.value, Value::Str(s) if s.as_ref() == value),
+                None => false,
+            },
+            PredicateForm::StrPrefix { attr, value } => match self.latest_cell(node, attr) {
+                Some(cell) => matches!(&cell.value, Value::Str(s) if s.as_ref().starts_with(value)),
+                None => false,
+            },
+        }
+    }
+
+    /// Is `node`'s current state in the given terminal class?
+    fn child_in_terminal_class(&self, node: NodeId, success: bool) -> bool {
+        let type_code = self.arrays.type_of(node);
+        let Some(ntk) = self.node_type_key(type_code) else {
+            return false;
+        };
+        let Some(model_key) = self.node_type_model.get(ntk) else {
+            return false;
+        };
+        let Some(model) = self.compiled.models.get(model_key) else {
+            return false;
+        };
+        let code = self.arrays.state_of(node) as usize;
+        let Some((_, success_terminal, failure_terminal)) = model.states.get(code) else {
+            return false;
+        };
+        if success {
+            *success_terminal
+        } else {
+            *failure_terminal
+        }
+    }
+
+    /// Dispatch one action (SPEC-01 §9): validate → gate → move → effects.
+    pub fn apply_action(
+        &mut self,
+        node: NodeId,
+        transition_key: &Key,
+        actor: ActorClass,
+        subject: impl Into<String>,
+        payload: Option<Value>,
+    ) -> Result<ActionOutcome, DispatchError> {
+        let t = self
+            .transitions
+            .get(transition_key)
+            .ok_or_else(|| DispatchError::UnknownTransition {
+                key: transition_key.clone(),
+            })?
+            .clone();
+
+        // Actor law (SPEC-01 §9): invokable iff actor ∈ actors (non-empty).
+        if !t.actors.contains(&actor) {
+            return Err(DispatchError::NotInvokable {
+                transition: transition_key.clone(),
+                actor,
+            });
+        }
+
+        // Node type/model resolution.
+        let type_code = self.arrays.type_of(node);
+        let ntk = self
+            .node_type_key(type_code)
+            .ok_or_else(|| DispatchError::UnknownNodeType {
+                key: key_of_code(type_code),
+            })?
+            .clone();
+        let model_key = self.node_type_model[&ntk].clone();
+        if model_key != t.model {
+            return Err(DispatchError::UnknownTransition {
+                key: transition_key.clone(),
+            });
+        }
+
+        // Current state (SoA u8) → key; R5 terminal absorption; from-match.
+        let state_code = self.arrays.state_of(node);
+        let model =
+            self.compiled
+                .models
+                .get(&model_key)
+                .ok_or_else(|| EngineError::UnknownModel {
+                    model: model_key.clone(),
+                })?;
+        let Some((actual, success_terminal, failure_terminal)) =
+            model.states.get(state_code as usize)
+        else {
+            return Err(corrupt_state_code(model_key.clone(), state_code));
+        };
+        if &t.from != actual {
+            return Err(DispatchError::StateMismatch {
+                expected_from: t.from.clone(),
+                actual: actual.clone(),
+            });
+        }
+        if *success_terminal || *failure_terminal {
+            return Err(DispatchError::Terminal {
+                state: actual.clone(),
+            });
+        }
+
+        // Requirements (SGT-9.1): failing list is machine-readable.
+        let failing: Vec<Key> = t
+            .requirements
+            .iter()
+            .filter(|r| !self.eval_rule(r, node))
+            .cloned()
+            .collect();
+        if !failing.is_empty() {
+            return Err(DispatchError::RequirementsUnmet { failing });
+        }
+
+        // FSM motion (declared-only, ranks, absorbing — T-201).
+        let allowed = self.fsm.check_motion(&model_key, &t.from, &t.to)?;
+        let to_code = allowed.to.code;
+
+        // Effects.
+        let mut engine_facts = Vec::new();
+        let mut spawned = None;
+        let mut cancelled = Vec::new();
+        for effect in &t.effects {
+            match effect {
+                Effect::Spawn { instance_of } => {
+                    let child_type_code = self.node_type_code(instance_of).ok_or_else(|| {
+                        DispatchError::UnknownNodeType {
+                            key: instance_of.clone(),
+                        }
+                    })?;
+                    let child = self
+                        .arrays
+                        .add_child(node, child_type_code)
+                        .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+                    engine_facts.push(EngineFact::AddVertex {
+                        node: child,
+                        parent: node,
+                        node_type: instance_of.clone(),
+                    });
+                    spawned = Some(child);
+                }
+                Effect::SelectBranch => {
+                    // The selected branch rides in the payload as NodeRef.
+                    let Some(Value::NodeRef(selected)) = payload.as_ref() else {
+                        return Err(DispatchError::MissingBranchSelection);
+                    };
+                    let selected = *selected;
+                    let (kept, others) = self.xor_branches_of(node, selected)?;
+                    let _ = kept;
+                    for sibling in others {
+                        let reason = format!("select_branch: {selected:?} chosen over {sibling:?}");
+                        if let Some(_moved_to) = self.cancel_via_declared_motion(sibling)? {
+                            cancelled.push((sibling, reason.clone()));
+                            engine_facts.push(EngineFact::CancelSibling {
+                                node: sibling,
+                                reason,
+                            });
+                        } else {
+                            // No declared cancel path: record-only (observable).
+                            cancelled
+                                .push((sibling, format!("{reason} (no declared cancel motion)")));
+                            engine_facts.push(EngineFact::CancelSibling {
+                                node: sibling,
+                                reason: format!("{reason} (no declared cancel motion)"),
+                            });
+                        }
+                    }
+                }
+                Effect::CancelSiblings => {
+                    // Cancel ALL XOR siblings of the acting node's decision
+                    // parent (reuses select_branch machinery, micro-dec 8).
+                    for sibling in self.xor_siblings_via_parents(node) {
+                        let reason = format!("cancel_siblings: superseded by {node:?}");
+                        if self.cancel_via_declared_motion(sibling)?.is_some() {
+                            cancelled.push((sibling, reason.clone()));
+                            engine_facts.push(EngineFact::CancelSibling {
+                                node: sibling,
+                                reason,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // State motion (the ONLY state write — P2).
+        self.arrays
+            .set_state(node, to_code)
+            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+
+        let record = ActionRecord {
+            lsn: None, // sequencer assigns (tx layer)
+            node,
+            transition: transition_key.clone(),
+            actor_class: actor,
+            subject: subject.into(),
+            payload,
+            from: allowed.from.key.clone(),
+            to: allowed.to.key.clone(),
+        };
+        Ok(ActionOutcome {
+            from: allowed.from.key,
+            to: allowed.to.key,
+            record,
+            engine_facts,
+            spawned,
+            cancelled,
+        })
+    }
+
+    /// XOR branches of a decision node: dsts of outgoing XOR edges.
+    fn xor_branches_of(
+        &self,
+        decision: NodeId,
+        selected: NodeId,
+    ) -> Result<(bool, Vec<NodeId>), DispatchError> {
+        let mut targets = Vec::new();
+        for eid in self.arrays.dep_out_ids(decision) {
+            if let Some(rec) = self.arrays.edge(*eid)
+                && rec.kind == kinds::XOR
+            {
+                targets.push(rec.dst);
+            }
+        }
+        if !targets.contains(&selected) {
+            return Err(DispatchError::NotABranch {
+                node: decision,
+                selected,
+            });
+        }
+        let others: Vec<NodeId> = targets.into_iter().filter(|t| *t != selected).collect();
+        Ok((true, others))
+    }
+
+    /// Siblings connected to `node` through a shared decision parent via XOR.
+    fn xor_siblings_via_parents(&self, node: NodeId) -> Vec<NodeId> {
+        let mut siblings = Vec::new();
+        for eid in self.arrays.dep_in_ids(node) {
+            if let Some(rec) = self.arrays.edge(*eid)
+                && rec.kind == kinds::XOR
+            {
+                let parent = rec.src;
+                for eid2 in self.arrays.dep_out_ids(parent) {
+                    if let Some(rec2) = self.arrays.edge(*eid2)
+                        && rec2.kind == kinds::XOR
+                        && rec2.dst != node
+                        && !siblings.contains(&rec2.dst)
+                    {
+                        siblings.push(rec2.dst);
+                    }
+                }
+            }
+        }
+        siblings
+    }
+
+    /// Cancel a sibling: find a declared motion from its current state to a
+    /// failure terminal; apply through the FSM. Returns the moved-to state.
+    fn cancel_via_declared_motion(
+        &mut self,
+        sibling: NodeId,
+    ) -> Result<Option<Key>, DispatchError> {
+        let type_code = self.arrays.type_of(sibling);
+        let Some(ntk) = self.node_type_key(type_code) else {
+            return Ok(None);
+        };
+        let model_key = self.node_type_model[ntk].clone();
+        let state_code = self.arrays.state_of(sibling);
+        let Some(model) = self.compiled.models.get(&model_key) else {
+            return Ok(None);
+        };
+        let Some((cur, _, _)) = model.states.get(state_code as usize) else {
+            return Ok(None); // stale state code after schema evolution: nothing to cancel
+        };
+        // any declared motion from current state to a failure terminal
+        let mut cancel_to: Option<Key> = None;
+        for (from, to) in model.motions.keys() {
+            if from == cur
+                && let Some((_, _, failure_terminal)) =
+                    model.states.iter().find(|(k, _, _)| k == to)
+                && *failure_terminal
+            {
+                cancel_to = Some(to.clone());
+                break;
+            }
+        }
+        let Some(to) = cancel_to else { return Ok(None) };
+        let allowed = self.fsm.check_motion(&model_key, cur, &to)?;
+        self.arrays
+            .set_state(sibling, allowed.to.code)
+            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+        Ok(Some(to))
+    }
+
+    pub fn cancellation_reason(&self, node: NodeId) -> Option<&String> {
+        self.cancellations.get(&node.0)
+    }
+}
+
+/// A state code outside the model's range after schema evolution — an
+/// invariant violation surfaced loudly (never silently mapped).
+fn corrupt_state_code(model: Key, code: u8) -> DispatchError {
+    DispatchError::Engine(EngineError::Arrays(
+        lattice_core::arrays::ArrayError::MalformedRaw {
+            reason: format!("model `{model}`: state code {code} out of range"),
+        },
+    ))
+}
+
+fn unreachable_key() -> Key {
+    panic!("both fallback keys must parse — programmer error")
+}
+
+fn key_of_code(_code: u16) -> Key {
+    Key::parse("__unknown_node_type__")
+        .unwrap_or_else(|_| Key::parse("unknown_node_type").unwrap_or_else(|_| unreachable_key()))
+}
+
+fn field_index(field: &Key) -> usize {
+    // v1: record fields are addressed by their declared index encoded in the
+    // field key grammar as a decimal suffix (field grammar is schema-level;
+    // the engine needs only a stable index). Keys are snake_case names — the
+    // trailing numeric suffix IS the index by bundle convention.
+    let name = field.as_str();
+    let idx: String = name
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    idx.parse().unwrap_or(usize::MAX)
+}
+
+/// Order-sensitive comparison for predicate forms (same-variant only; a
+/// variant mismatch makes the comparison false — typed columns guarantee
+/// homogeneity in practice).
+fn value_cmp(actual: &Value, op: &CmpOp, expected: &Value) -> bool {
+    use std::cmp::Ordering;
+    let ord = match (actual, expected) {
+        (Value::I64(a), Value::I64(b))
+        | (Value::Timestamp(a), Value::Timestamp(b))
+        | (Value::Duration(a), Value::Duration(b)) => a.cmp(b),
+        (Value::F64(a), Value::F64(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+        (Value::Str(a), Value::Str(b)) => a.as_ref().cmp(b.as_ref()),
+        (Value::Enum(a), Value::Enum(b)) => a.cmp(b),
+        (Value::Decimal(a), Value::Decimal(b)) => a.unscaled.cmp(&b.unscaled),
+        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+        _ => return false,
+    };
+    match op {
+        CmpOp::Eq => ord == Ordering::Equal,
+        CmpOp::Ne => ord != Ordering::Equal,
+        CmpOp::Gt => ord == Ordering::Greater,
+        CmpOp::Gte => ord != Ordering::Less,
+        CmpOp::Lt => ord == Ordering::Less,
+        CmpOp::Lte => ord != Ordering::Greater,
+    }
+}
+
+// silence: KeyIndex/Lsn used in cells API
+#[allow(unused)]
+fn _touches(k: KeyIndex, l: Lsn) {}

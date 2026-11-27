@@ -19,7 +19,7 @@ use lattice_storage::part::{PartBuilder, PartCell, PartValueType};
 use lattice_storage::snapshot::{encode_snapshot, read_snapshot, write_snapshot};
 use latticedb::bundles::install_named;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The deterministic M1 workload: install a bundle, build a two-level
 /// graph, append cells (scalar + series), checkpoint.
@@ -51,23 +51,21 @@ fn run_workload(dir: &Path) -> (Vec<u8>, Vec<u8>, u64) {
     journal.commit_txn(1).expect("commit");
 
     let mut lsn_base = journal.next_lsn();
-    let mut txn = 2u64;
-    for (node, k, lsn, v) in [
+    let cells = [
         (t1.0, 0u64, lsn_base, Value::Str("first task".into())),
         (t2.0, 0, lsn_base + 1, Value::Str("second task".into())),
         (t1.0, 1, lsn_base + 2, Value::I64(42)),
-    ] {
+    ];
+    for (txn, (node, k, _lsn, v)) in [2u64, 3, 4].into_iter().zip(cells) {
         let mut payload = Vec::new();
         payload.extend_from_slice(&node.to_le_bytes());
         payload.extend_from_slice(&k.to_le_bytes());
         lattice_core::value_codec::encode_value(&v, &mut payload);
-        let _ = lsn;
         journal.begin_txn(txn).expect("begin");
         journal
             .append(txn, RecordKind::SetAttr, &payload)
             .expect("cell");
         journal.commit_txn(txn).expect("commit");
-        txn += 1;
         lsn_base += 1;
     }
     journal.sync().expect("journal fsync");
@@ -189,10 +187,8 @@ fn restart_verify(dir: &Path, snapshot_expected: &[u8], part_expected: &[u8], la
 
 #[test]
 fn sft_1_1_seed_two_databases_byte_identical_and_restart_verified() {
-    let dir_a = PathBuf::from(std::env::temp_dir())
-        .join(format!("latticedb-smoke-a-{}", std::process::id()));
-    let dir_b = PathBuf::from(std::env::temp_dir())
-        .join(format!("latticedb-smoke-b-{}", std::process::id()));
+    let dir_a = std::env::temp_dir().join(format!("latticedb-smoke-a-{}", std::process::id()));
+    let dir_b = std::env::temp_dir().join(format!("latticedb-smoke-b-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir_a);
     let _ = fs::remove_dir_all(&dir_b);
 
