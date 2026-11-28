@@ -1406,16 +1406,8 @@ fn selectors_and_filters_refuse_what_they_cannot_mean() {
         select(&mut kernel, Selector::AttrPresence { attr: key("title") }),
         tasks.iter().map(|t| t.0).collect()
     );
-    assert_eq!(
-        select(
-            &mut kernel,
-            Selector::SharedKey {
-                attr: key("title"),
-                value: Value::str("even").unwrap()
-            }
-        ),
-        by_two.iter().copied().collect()
-    );
+    // `shared_key` is not a node-set selector (docs/MODEL.md §5, SQ-13): the
+    // kernel has no such Selector variant, and nothing here stands in for it.
     let root = tasks[0];
     let subtask = create(&mut kernel, "subtask", Some(root.0), vec![]);
     log_rows(&mut kernel, subtask, &[1]);

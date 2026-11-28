@@ -1125,3 +1125,77 @@ fn structure_refusals_follow_the_hint_law() {
         "only the accepted commands were journaled"
     );
 }
+
+/// ONE key axis per node (SPEC-01 §6, §18.1; docs/MODEL.md §3): every vector
+/// of a node is a column of the same table keyed by `k`, whichever table set
+/// it belongs to. A row appended to a second table set therefore continues
+/// the node's axis — it does not start a second counter.
+#[test]
+fn one_key_axis_per_node_spans_every_table_set() {
+    let dir = test_dir("one_key_axis");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
+    kernel
+        .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
+        .expect("install schema");
+    let project = create(&mut kernel, "project", None, vec![]);
+    let task = create(&mut kernel, "task", Some(project.0), vec![]);
+    let append = |kernel: &mut Kernel, set: &str, attr: &str, values: &[i64]| -> u64 {
+        match kernel
+            .execute(
+                0,
+                &subject(),
+                &Command::RowAppend {
+                    node: task,
+                    set: key(set),
+                    rows: values
+                        .iter()
+                        .map(|v| Row {
+                            k_skip: 0,
+                            cells: vec![(key(attr), Value::I64(*v))],
+                        })
+                        .collect(),
+                },
+            )
+            .expect("row append")
+        {
+            Reply::Rows { first_k, .. } => first_k,
+            other => panic!("expected a Rows reply, got {other:?}"),
+        }
+    };
+
+    // Table set `task_table`: two rows, k = 0 and 1.
+    assert_eq!(append(&mut kernel, "task_table", "log", &[10, 11]), 0);
+    // The second table set `scores` on the SAME node continues at k = 2.
+    assert_eq!(append(&mut kernel, "scores", "score", &[5]), 2);
+    // And the first set picks up after it at k = 3.
+    assert_eq!(append(&mut kernel, "task_table", "log", &[12]), 3);
+    assert_eq!(
+        cells_of(&kernel, task, &key("log")),
+        vec![
+            (0, Value::I64(10)),
+            (1, Value::I64(11)),
+            (3, Value::I64(12))
+        ]
+    );
+    assert_eq!(
+        cells_of(&kernel, task, &key("score")),
+        vec![(2, Value::I64(5))]
+    );
+    // The record at k = 2 has an ABSENT `log`; the records at 0, 1 and 3
+    // have an absent `score` — absent cells are not stored.
+    assert!(
+        cells_of(&kernel, task, &key("log"))
+            .iter()
+            .all(|(k, _)| *k != 2),
+        "no phantom cell where the row did not address the column"
+    );
+
+    let live = digest(kernel.state());
+    kernel.close().expect("close");
+    let (reopened, _) = Kernel::open(&dir, options()).expect("reopen");
+    assert_eq!(
+        digest(reopened.state()),
+        live,
+        "the shared axis replays identically"
+    );
+}

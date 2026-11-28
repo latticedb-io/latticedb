@@ -31,7 +31,11 @@ use lattice_schema::key::Key;
 use lattice_storage::part::Part;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Which nodes a cursor covers.
+/// Which nodes a cursor covers. Every selector picks a NODE SET. The
+/// `shared_key` cursor of SPEC-02 §8 is deliberately absent: it is not a
+/// node-set selector but the RECORD cursor over vectors that share a node's
+/// key (`docs/MODEL.md` §5, BACKLOG SQ-13) — it lands with T-315 once the
+/// owner confirms its parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Selector {
     All,
@@ -44,13 +48,9 @@ pub enum Selector {
         node_type: Key,
         state: Key,
     },
+    /// Nodes holding at least one cell of the attribute.
     AttrPresence {
         attr: Key,
-    },
-    /// Nodes whose scalar `attr` equals `value`.
-    SharedKey {
-        attr: Key,
-        value: Value,
     },
 }
 
@@ -297,17 +297,11 @@ pub fn select_nodes(
                 Some(all(&|n| arrays.type_of(NodeId(n)) == code))
             }
         }
-        Selector::AttrPresence { attr } | Selector::SharedKey { attr, .. } => {
+        Selector::AttrPresence { attr } => {
             let id = attr_id(state, attr)?;
-            let equal = match selector {
-                Selector::SharedKey { value, .. } => Some(value.clone()),
-                _ => None,
-            };
             let mut set = BTreeSet::new();
-            for ((node, a, k), cell) in machine.cells() {
-                let matches =
-                    a == id && equal.as_ref().is_none_or(|v| k.0 == 0 && &cell.value == v);
-                if matches && arrays.is_alive(node) {
+            for ((node, a, _), _) in machine.cells() {
+                if a == id && arrays.is_alive(node) {
                     set.insert(node.0);
                 }
             }

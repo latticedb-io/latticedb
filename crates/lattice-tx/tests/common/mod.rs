@@ -222,6 +222,9 @@ pub fn schema_ops() -> Vec<SchemaOp> {
         ),
         vector("log", ElemType::Scalar(ScalarType::I64)),
         vector("reading", ElemType::Scalar(ScalarType::F64)),
+        // A SECOND table set on the task type: both share the node's one
+        // key axis (SPEC-01 §6 — one KeyType per node).
+        vector("score", ElemType::Scalar(ScalarType::I64)),
         SchemaOp::CreateAttributeSet(AttributeSet {
             key: key("task_meta"),
             kind: SetKind::ScalarSet,
@@ -251,6 +254,12 @@ pub fn schema_ops() -> Vec<SchemaOp> {
                 value: Value::I64(10),
             },
         }),
+        SchemaOp::CreateAttributeSet(AttributeSet {
+            key: key("scores"),
+            kind: SetKind::TableSet,
+            members: vec![key("score")],
+            write_scope: None,
+        }),
         SchemaOp::CreateRule(NamedRule {
             key: key("owner_set"),
             form: PredicateForm::AttrPresent { attr: key("owner") },
@@ -260,7 +269,7 @@ pub fn schema_ops() -> Vec<SchemaOp> {
             "task",
             Some("project"),
             "task_flow",
-            vec!["task_meta", "task_table"],
+            vec!["task_meta", "task_table", "scores"],
         ),
         node_type("subtask", Some("task"), "sub_flow", vec!["task_meta"]),
         // Locked while `running`: only the table set is writable (SGT-7.3).

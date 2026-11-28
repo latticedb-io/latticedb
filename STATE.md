@@ -16,6 +16,11 @@ M0–M2 tagged. M3 in progress under the re-cut order (MANIFEST §10 "Sequence r
 
 Both tasks wait for the Supervisor (deferred to the V1 gate). Working tree clean.
 
+**Model re-read (owner-mandated, 2026-11-28):** `docs/MODEL.md` is now required reading
+(AGENTS rules 10, 11: a name is not a definition; [S]/[D]/[O] labels; guess audit §11).
+It found and fixed two name-based guesses: row append keyed per table set instead of per
+node (ED-29), and `shared_key` implemented as scalar equality (ED-30, SQ-13).
+
 ## Decided this session (2026-11-28)
 
 - **T-311 toolchain (owner):** Gradle Kotlin DSL · JDK 21 LTS · coroutines-first ·
@@ -36,16 +41,22 @@ Both tasks wait for the Supervisor (deferred to the V1 gate). Working tree clean
 - **SQ-10** no wire code for a state-locked attribute write (mapped to `FORBIDDEN`).
 - **SQ-11** `CURSOR_EXPIRED` has no registered code (mapped to `NOT_FOUND` + hint).
 - **SQ-12** the engine holds every cell in memory — decide the memory model.
-- **SQ-13** `shared_key` cursor parameters under-specified (blocks that index in T-315).
+- **SQ-13** `shared_key` record-cursor parameters (meaning settled with the owner;
+  parameters proposed — confirm before T-315 builds it).
+- **SQ-14** first `k` of a vector axis (0 or 1). · **SQ-15** point append at
+  `k == current_max`. · **SQ-16** unit of the global epoch marker (kernel: COMMIT LSN).
 
 ## Next (in order = TASKS.md M3 ID order)
 
-1. **T-315 secondary indices — NOT started.** Rule-10 re-read first: SPEC-01 §12,
-   ARCH §5.2, SPEC-02 §8, TASKS.md T-315 row (SGT-12.1, SGT-12.2). Build on
-   `lattice_tx::read::select_nodes` — T-314's selectors are scan-based (ByState,
-   AttrPresence, SharedKey, TypeScan); T-315 adds the IndexDef views, re-points the
-   selectors at them, and proves "index == scan" and "drop + rebuild == identical"
-   (SGT-12.1/12.2). `shared_key` parameters are SQ-13 — ask before building that index.
+1. **T-315 secondary indices + record cursor — NOT started.** Rule-10 re-read first:
+   `docs/MODEL.md` (§3 node-as-a-table, §5 read model), SPEC-01 §6/§12, ARCH §5.2,
+   SPEC-02 §8, TASKS.md T-315 row. Two halves: (a) IndexDef views (by_state,
+   attr_presence, set_presence) behind `lattice_tx::read::select_nodes` — today's
+   selectors are scans; prove "index == scan" and "drop + rebuild == identical"
+   (SGT-12.1/12.2); (b) the `shared_key` RECORD cursor — vectors sharing a node key
+   aligned on `(node_id, k)` and returned as records (kernel `Selector` has no SharedKey;
+   T-314's single-column cursor is its one-column case). **Do NOT start (b) before the
+   owner confirms SQ-13's parameters.**
 2. T-316 full CLI → T-317 / T-318 kernel semantics completion → T-319 listeners →
    T-320 WPT socket-level pass.
 

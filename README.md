@@ -62,6 +62,7 @@ no ANN/BM25 in core, no multi-master distribution. Full list: `MANIFEST.md` §4.
 | [`docs/specs/SPEC-02-wire-protocol.md`](docs/specs/SPEC-02-wire-protocol.md) | Native wire protocol: framing, handshake, sessions, cursors, watches (frozen v1.0) |
 | [`docs/specs/SPEC-03-storage-format.md`](docs/specs/SPEC-03-storage-format.md) | Storage: snapshot, journal, parts, codecs, determinism oracle (frozen v1.0) |
 | [`docs/specs/SPEC-04-mcp-surface.md`](docs/specs/SPEC-04-mcp-surface.md) | MCP tool surface for AI agents (frozen v1.0) |
+| [`docs/MODEL.md`](docs/MODEL.md) | The one reading of the contract — every statement labelled stated / derived / open; required reading before any task |
 | [`research/`](research/) | Supporting surveys: column stores, schema evolution, identity/auth |
 | [`TASKS.md`](TASKS.md) | The task ledger — the only source of implementable work |
 | [`BACKLOG.md`](BACKLOG.md) | Ideas parked outside V1 scope |

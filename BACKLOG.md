@@ -169,12 +169,40 @@ a tested invariant), but memory still scales with data. Options: (a) v1 keeps th
 in-memory store as the engine's working set and states it in ARCHITECTURE; (b) the engine
 reads through the column store (a real re-architecture; needed for OLAP-lite sizes).
 
-**SQ-13 · `shared_key` cursor parameters are under-specified · found T-314 · owner
-decision required.** SPEC-02 §8 lists `shared_key` among cursor indexes without naming its
-parameters; T-308's TLV decoder reads only a `SHARED_KEY` string; SPEC-04 §4 lists it
-again. The kernel implements it as "nodes whose scalar attribute `attr` equals `value`"
-(params: attr + value). Decide and pin the parameters in SPEC-02 §8 (T-315 builds the
-index on whatever is decided).
+**SQ-13 · `shared_key` cursor: meaning and parameters · found T-314, corrected by the
+owner 2026-11-28 · parameters need owner confirmation.** SPEC-02 §8 lists `shared_key`
+among the cursor index kinds without defining it. Two implementations GUESSED, both
+wrong: T-308's TLV decoder (`SharedKey { key: String }` — a node-set selector) and T-314
+("nodes whose scalar attribute equals a value" — removed from the kernel). The model
+(`docs/MODEL.md` §5): every other index kind selects a NODE SET; `shared_key` is about
+the KEY — the vectors that share a node's key (one KeyType axis per node, SPEC-01 §6)
+and, across nodes, the vectors of nodes whose types declare the same KeyType. The
+`shared_key` cursor is the RECORD cursor — the `merge-join-on-key` kernel (D-10.4) over
+those columns, yielding `(node, k) → {column: value}` records with absent cells, for one
+node or for several nodes combined into one columnar table keyed by `(node_id, k)`.
+**Proposed parameters (owner to confirm before T-315 builds it):** `key_type` (selects
+the nodes by their type's KeyType) · optional column list (default: the vector
+attributes effective for those nodes) · node scope (one node / subtree / every node of
+that key type) · filter · order. To be pinned in SPEC-02 §8 by DEC.
+
+**SQ-14 · First `k` of a vector axis · found on the model re-read 2026-11-28 · owner
+decision required.** The kernel numbers a vector's first row `k = 0`; scalars sit at
+`k = 0` too (SPEC-03 §9.1). The contract does not say whether the first vector row shares
+`k = 0` with the scalar row or starts at `k = 1`. Options: (a) keep 0 and state it; (b)
+vectors start at 1 so `k = 0` is only ever the scalar row.
+
+**SQ-15 · Point append at exactly `k == current_max` · found on the model re-read
+2026-11-28 · owner decision required.** SPEC-01 §6 rejects ks "below current max" and
+allows "explicit `k > current_max`"; `k == max` is unnamed. `Validators::r12_append_only`
+rejects only `k < max`; the kernel refuses `k <= max` (append-only: the top cell is never
+overwritten). Decide and pin one rule.
+
+**SQ-16 · The global epoch marker's unit · found on the model re-read 2026-11-28 · owner
+decision required.** "Epoch" is both the per-node change counter and "the global snapshot
+marker" (ARCHITECTURE §4). The contract does not name the marker's unit; the kernel uses
+the COMMIT LSN of the last unit a read saw. Confirm, and pin it in SPEC-02 §8
+(`at_epoch` takes an LSN).
+
 ---
 
 ## Engineering debt register (tracked deferrals from M0/M1 implementation)
@@ -371,3 +399,18 @@ a snapshot across fetches.
 Parts are `read()` + parsed into an in-process cache on first use (dropped at checkpoint);
 correct, costs memory. The checkpoint also parses every part twice (cells, then the read
 cache). mmap and a single parse are hardening work with evidence.
+
+**ED-29 · Row append advanced one counter per TABLE SET · T-313, found on the model
+re-read 2026-11-28 · FIXED.** `EngineState::row_ks` took the next `k` from the addressed
+set's members only. The contract's counter is per NODE — one key axis per node
+(SPEC-01 §6, §18.1; `docs/MODEL.md` §3) — so a row appended to a second table set must
+continue the node's axis. Invisible in every earlier test because no fixture had a node
+type with two table sets. Fixed; the fixture gained a second table set (`scores`) and
+`one_key_axis_per_node_spans_every_table_set` fails on the old logic.
+
+**ED-30 · Wire cursor kinds were guessed from names · T-308, found T-314 · T-319.**
+`lattice-wire/src/reads.rs` models `shared_key` as a node-set selector carrying one
+string (`CursorKind::SharedKey { key: String }`). Per `docs/MODEL.md` §5 it is the record
+cursor over vectors sharing a node key. T-319 re-points the wire cursor kinds onto the
+kernel read API; until then the wire codec's `shared_key` is wrong by construction.
+

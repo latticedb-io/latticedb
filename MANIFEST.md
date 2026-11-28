@@ -298,6 +298,12 @@ compliance time-travel (epoch reads + audit).
   **LatticeDB**; domains emergenta.dev (canonical) / emergenta.io (alias) / latticedb.io;
   GitHub `latticedb-io`; containment hierarchy Host → Database → Graph schema → forest
   → node (Q4 closed); identity phased vector v1/v1.x/v2 accepted as working model (Q10).
+- **Model reading (2026-11-28, owner):** `docs/MODEL.md` is the ONE reading of this
+  constitution, ARCHITECTURE and the specs — every statement labelled stated, derived or
+  open, with an audit of concepts that were once guessed from their names. It is required
+  reading before any task, and non-normative: the contract wins on any conflict. A name
+  is not a definition: a concept the model does not pin is a question for the architect
+  pair, never an implementation choice.
 
 ## 11. Glossary
 

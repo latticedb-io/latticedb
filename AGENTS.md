@@ -13,6 +13,10 @@ scalar + vector attributes and deterministic derived state. Repo codename: `uvdb
 4. `docs/specs/SPEC-02-wire-protocol.md` — FROZEN v1.0.
 5. `docs/specs/SPEC-03-storage-format.md` — FROZEN v1.0.
 6. `docs/specs/SPEC-04-mcp-surface.md` — FROZEN v1.0.
+7. `docs/MODEL.md` — the ONE reading of the contract, every statement labelled
+   **[S]** stated / **[D]** derived / **[O]** open. Required reading before any task.
+   It is kept in step with the contract by the architect pair; when a concept is
+   misread or guessed, the fix is BOTH in the code AND in `docs/MODEL.md` §11.
 
 Post-freeze spec changes REQUIRE a decision entry (`DEC-x` in the owning spec's
 decision log or MANIFEST §10) approved by the architect pair. **No silent spec drift.**
@@ -54,12 +58,19 @@ decision log or MANIFEST §10) approved by the architect pair. **No silent spec 
    (e.g. `t000-skeleton`). Tags are never skipped or retro-batched — the Supervisor uses
    them as review ranges (`git diff <prev-tag>..<tag>`).
 10. **Contract re-read before every task (owner-mandated).** Before starting any task,
-    re-read MANIFEST §8 (milestones), ARCHITECTURE §13 (milestone mapping + exit
+    re-read `docs/MODEL.md` (the shared reading — especially the sections the task
+    touches), MANIFEST §8 (milestones), ARCHITECTURE §13 (milestone mapping + exit
     criteria) and the spec sections the task cites. Check that the task still maps to
     the contract — dependency order, binding test *level* (unit vs integration), exit
     criteria — and that the live docs (TASKS.md, BACKLOG.md, STATE.md) match the repo.
     Findings are recorded (BACKLOG SQ/ED, TASKS.md) and decided before implementation;
     they are never absorbed silently. Live docs are refined as part of this check.
+11. **A name is not a definition (owner-mandated).** Understand the architecture, do
+    not reconstruct it from identifiers. A schema/wire/cursor name whose semantics are
+    not written down — or are marked **[O]** in `docs/MODEL.md` — is an open question
+    (BACKLOG SQ) to put to the architect pair, NEVER an implementation choice. When a
+    concept turns out to have been guessed, fix the code AND record it in
+    `docs/MODEL.md` §11 so it is not guessed again after a restart.
 
 ## Rust rules (owner-mandated)
 

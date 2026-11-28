@@ -685,7 +685,7 @@ impl EngineState {
                 self.check_cell(&ctx, attr, CellK::Row, value)?;
             }
         }
-        let ks = self.row_ks(node, &attr_set.members, rows);
+        let ks = self.row_ks(node, rows)?;
         Ok(Planned {
             records: vec![Record::new(RecordData::RowAppend {
                 node: node.0,
@@ -991,23 +991,45 @@ impl EngineState {
         Ok(())
     }
 
-    /// The `k` each row of a row-append lands on: the node's key axis
-    /// advances once per row; `k_skip` leaves a hole (SPEC-01 §6).
-    fn row_ks(&self, node: NodeId, members: &[Key], rows: &[crate::records::Row]) -> Vec<u64> {
+    /// The `k` each row of a row-append lands on. ONE key axis per node
+    /// (SPEC-01 §6, §18.1): the next `k` is one past the greatest `k` of ANY
+    /// of the node's vector attributes — whichever table set it belongs to —
+    /// and the axis advances once per row; `k_skip` leaves a hole.
+    fn row_ks(&self, node: NodeId, rows: &[crate::records::Row]) -> Result<Vec<u64>, KernelError> {
+        let type_key = self.type_key_of(node)?;
         let machine = self.machine();
-        let mut k = members
+        let compiled = machine.compiled_ref();
+        let Some(effective) = compiled.effective_attrs.get(&type_key) else {
+            return Err(KernelError::new(
+                codes::INTERNAL,
+                "",
+                format!("type `{type_key}` has no compiled attribute set"),
+            ));
+        };
+        let mut k = 0u64;
+        for (attr, id) in &compiled.attr_ids {
+            let is_vector = self
+                .schema
+                .catalog
+                .attributes
+                .get(attr)
+                .is_some_and(|d| matches!(d.attr_type, AttrType::Vector { .. }));
+            if is_vector
+                && effective.test(usize::from(id.0))
+                && let Some(max) = machine.max_k(node, attr)
+            {
+                k = k.max(max + 1);
+            }
+        }
+        Ok(rows
             .iter()
-            .filter_map(|m| machine.max_k(node, m))
-            .max()
-            .map_or(0, |max| max + 1);
-        rows.iter()
             .map(|row| {
                 k += u64::from(row.k_skip);
                 let at = k;
                 k += 1;
                 at
             })
-            .collect()
+            .collect())
     }
 
     /// The node and every live descendant, pre-order (children ascending).
@@ -1270,18 +1292,14 @@ impl EngineState {
                     self.write_cell(*node, attr, *k, value.clone(), lsn)?;
                 }
             }
-            RecordData::RowAppend { node, set, rows } => {
-                let members: Vec<Key> = self
-                    .schema
-                    .catalog
-                    .attr_sets
-                    .get(set)
-                    .map(|s| s.members.clone())
-                    .ok_or_else(|| invariant(format!("ROW_APPEND set `{set}` is not declared")))?;
-                let ks = self.row_ks(NodeId(*node), &members, rows);
+            RecordData::RowAppend { node, set: _, rows } => {
+                let node = NodeId(*node);
+                let ks = self
+                    .row_ks(node, rows)
+                    .map_err(|e| invariant(format!("ROW_APPEND key axis: {e}")))?;
                 for (row, k) in rows.iter().zip(ks) {
                     for (attr, value) in &row.cells {
-                        self.write_cell(*node, attr, k, value.clone(), lsn)?;
+                        self.write_cell(node.0, attr, k, value.clone(), lsn)?;
                     }
                 }
             }
