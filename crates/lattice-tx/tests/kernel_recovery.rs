@@ -65,7 +65,7 @@ fn set(kernel: &mut Kernel, node: NodeId, attr: &str, value: Value) {
 }
 
 fn fresh(dir: &Path) -> Kernel {
-    let mut kernel = Kernel::create(dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -73,7 +73,7 @@ fn fresh(dir: &Path) -> Kernel {
 }
 
 fn reopen(dir: &Path) -> Kernel {
-    Kernel::open(dir, limits()).expect("reopen").0
+    Kernel::open(dir, options()).expect("reopen").0
 }
 
 // -- SFT-1.1 (kernel form) ------------------------------------------------------
@@ -350,7 +350,7 @@ fn sft_1_1_kernel_form_replay_identity_and_three_fresh_copies() {
         let mut images: Vec<DurableImage> = Vec::new();
         for dir in &dirs {
             let (live, _) = run_log(dir, seed, 400);
-            let (mut reopened, report) = Kernel::open(dir, limits()).expect("reopen");
+            let (mut reopened, report) = Kernel::open(dir, options()).expect("reopen");
             assert!(report.txns_replayed > 0);
             assert_eq!(
                 digest(reopened.state()),
@@ -360,7 +360,7 @@ fn sft_1_1_kernel_form_replay_identity_and_three_fresh_copies() {
             journals.push(segment_bytes(dir));
             reopened.checkpoint().expect("checkpoint");
             reopened.close().expect("close");
-            let (again, report) = Kernel::open(dir, limits()).expect("reopen after checkpoint");
+            let (again, report) = Kernel::open(dir, options()).expect("reopen after checkpoint");
             assert_eq!(report.txns_replayed, 0, "the snapshot covers everything");
             assert_eq!(digest(again.state()), live, "snapshot + parts == live");
             digests.push(live);
@@ -506,7 +506,7 @@ fn sft_3_1_checkpoint_reopen_restores_every_layer_exactly() {
     );
     kernel.close().expect("close");
 
-    let (mut reopened, open) = Kernel::open(&dir, limits()).expect("reopen");
+    let (mut reopened, open) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(
         open.txns_replayed, 0,
         "history before the checkpoint sits in snapshot + parts"
@@ -548,7 +548,7 @@ fn sft_3_1_checkpoint_reopen_restores_every_layer_exactly() {
     let lsn = reopened.last_lsn();
     let after = digest(reopened.state());
     reopened.close().expect("close");
-    let (again, open) = Kernel::open(&dir, limits()).expect("reopen again");
+    let (again, open) = Kernel::open(&dir, options()).expect("reopen again");
     assert_eq!(open.txns_replayed, 1, "exactly the post-checkpoint txn");
     assert_eq!(open.last_lsn, lsn);
     assert_eq!(digest(again.state()), after);
@@ -596,7 +596,7 @@ fn set_of(k: &str, members: Vec<&str>) -> SchemaOp {
 #[test]
 fn lineage_of_ids_and_type_codes_survives_schema_growth_and_restart() {
     let dir = test_dir("lineage");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     let epoch1 = vec![
         SchemaOp::CreateGraph(lattice_schema::entities::GraphSchema {
             key: key("g"),

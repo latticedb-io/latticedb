@@ -83,8 +83,8 @@ corrected 2026-11-28 from the crate manifests and test imports — Supervisor ve
 | T-309 | Watches | SPEC-02 §9 | WPT-9.1–9.3 | T-305, T-308 | done (codec level vs fake; live forms → T-313, T-320) |
 | T-310 | Concurrent subtree-locked writers + sequencer | ARCH §8 | confluence under parallel load; WPT-5.1 parallel variant | T-307 | done (in-memory fact path replaced by the durable kernel in T-313; its 5 tests ported) |
 | T-313 | **Kernel assembly**: library-mode database — create/open/recover/checkpoint/close; write path validate → U-lock → sequencer → durable journal → apply → propagation → quiesce → watches; full fact set (structure incl. edges, attributes incl. row append, actions, schema txns, grants); multi-command txns | ARCH §5.1, §5.3, §8; SPEC-02 §5; SPEC-03 §1 (D2), §3, §6; SPEC-01 §9, §16 | WPT-5.2, WPT-7.1, WPT-7.3, WPT-7.4 (kernel forms); SGT-1.1, SGT-3.3, SGT-9.2, SGT-9.5 (kernel / journal forms); SFT-1.1 (kernel form: live = replay, 3 fresh copies); SFT-3.1; SFT-6.4 | T-104–T-110, T-202–T-208, T-310 | review (Supervisor, deferred to V1 gate) — tests: `lattice-tx` kernel_write_path, kernel_recovery, records_golden, parallel_confluence |
-| T-314 | **Kernel read path**: snapshot (epoch-consistent, at_epoch), node read, cursors over arrays/parts, blockers, history | ARCH §5.2; SPEC-02 §8; SPEC-01 §6 | WPT-8.1–8.4 (kernel forms); SGT-6.2 | T-313, T-206 | pending |
-| T-315 | **Secondary indices**: IndexDef views (by_state, attr_presence, set_presence) — rebuildable from the journal | SPEC-01 §12; ARCH §5.2; SPEC-02 §8 | SGT-12.1, SGT-12.2 | T-314 | pending |
+| T-314 | **Kernel read path**: snapshot (epoch-consistent, at_epoch), node read, cursors over arrays/parts, blockers, history | ARCH §5.2; SPEC-02 §8; SPEC-01 §6 | WPT-8.1–8.4 (kernel forms); SGT-6.2; SFT-4.3 (kernel form) | T-313, T-206 | review (Supervisor, deferred to V1 gate) — tests: `lattice-tx` kernel_read_path |
+| T-315 | **Secondary indices**: IndexDef views (by_state, attr_presence, set_presence) — rebuildable from the journal; index-backed cursor selectors replace T-314's scans | SPEC-01 §12; ARCH §5.2; SPEC-02 §8 | SGT-12.1, SGT-12.2 | T-314 | pending |
 | T-316 | **Full CLI** (`latticedb-cli`, library mode): admin ops + the SPEC-02 §7–§10 command registry + schema plan/apply + bundles | ARCH §2, §13; SPEC-02 §7–§10; SPEC-01 §16–§17; SPEC-03 §7 | CLI-driven end-to-end on the real binary: SGT-17.1–17.3; SGT-16.3; WPT-7.1, WPT-7.3, WPT-7.4; WPT-8.2; restart/replay identity | T-313, T-314, T-315 | pending |
 | T-317 | **Kernel semantics completion I — attributes & key axis**: enum/record lifecycle, sparse axis, monotone guard, predicate whitelist, tightening, replay across epochs | SPEC-01 §1, §3–§7, §13, §16 | SGT-4.1–4.3, 5.2, 5.4, 6.1, 6.3, 6.4, 7.1, 7.3, 13.1, 16.4, 16.5 | T-313, T-314 | pending |
 | T-318 | **Kernel semantics completion II — authorization, aggregation, graph edges**: R11 scope checks + grants, children_state aggregation, cross-graph dependency edges | SPEC-01 §13–§15; SPEC-02 §7 | SGT-13.4, 14.1–14.3, 15.1, 15.2; WPT-7.5 | T-317 | pending |
@@ -141,8 +141,8 @@ corrected 2026-11-28 from the crate manifests and test imports — Supervisor ve
 - **Untested, need the listener — closed by T-319/T-320:**
   WPT-1.1, 5.3, 5.5, 5.6, 10.1, 10.2.
 - **Untested, admin plane — closed by T-401:** WPT-1.2, 11.1, 11.2.
-- **Untested, hardening — closed by M5:** SFT-4.3 (zone pushdown: mention only),
-  SFT-7.1–7.4 (T-501), SFT-8.1–8.3 (T-506).
+- **Untested, hardening — closed by M5:** SFT-7.1–7.4 (T-501), SFT-8.1–8.3 (T-506).
+  SFT-4.3 (zone pushdown) was here as "mention only"; closed at kernel level by T-314.
 - **Codec/unit level only while the binding level is integration (ED-12 → T-320):**
   WPT-2.1–2.3, 4.1–4.3, 5.1–5.2, 6.1–6.2, 7.x, 8.1–8.4, 9.1, 9.3, 10.3, 10.6.
 - **Carried by tests not named after the ID — Supervisor verifies at the gate:**
@@ -176,3 +176,35 @@ were not lineage-stable across a restart (ED-14).
 (SQ-09); state-lock refusals map to `FORBIDDEN` pending a code decision (SQ-10); guard
 params are rebuilt from the journal at open because the snapshot format cannot hold them
 (ED-15).
+
+## T-314 delivery notes (2026-11-28)
+
+**Model.** Reads run between committed units on the sequencer thread, so a read sees
+exactly one epoch — never a torn mix (WPT-8.1). The epoch marker is the COMMIT LSN of
+the last unit the read saw. Cursors read COLUMNAR DATA from the parts ⊕ the staging tail
+(cells written since the last checkpoint); a run excluded by liveness, selection, the run
+directory or the zone maps is never decoded, and each node's cells are decoded once per
+cursor whatever the page size. The engine keeps its own in-memory cell store for
+predicates; "cursor == engine store" is a tested invariant in every layer state (tail
+only, parts only, both, reopened). `at_epoch` is a time-travel read: a throwaway state is
+rebuilt read-only from the retained snapshot + parts + journal prefix (WPT-8.2).
+
+**API.** `lattice_tx::{Read, ReadReply}` — `Snapshot{graph?, subtree?, at_epoch?}`,
+`NodeRead`, `CursorOpen{attr, selector, filter}` / `CursorFetch{cursor, budget{rows,
+bytes}}` / `CursorClose`, `Blockers`, `History{node, range}`. `Kernel::read(session, ..)`
+honours a session's explicit txn (read-your-writes). `KernelOptions` carries the limits,
+the cursor idle ttl and a Host-injected clock (ephemeral session state only — P8 keeps
+wall-clock out of predicates and stored bytes).
+
+**Defects the read tests caught in the read path itself, fixed before commit:** a paged
+cursor re-emitted its first page forever (the reader never sought past the resume point);
+staged-only nodes bypassed node selection; part cells of I64 storage were not re-typed
+(`node_ref`/`timestamp`/`duration`); an upper-bound typo in the value filter.
+
+**Not in T-314 (decided, recorded in BACKLOG):** reads are serialized with writes, not
+lock-free (ED-26); no `order` parameter and single-column cursors (ED-27); parts are read
+into a cache, not mmap'd, and a cursor is not a snapshot across fetches (ED-28);
+`CURSOR_EXPIRED` has no registered code — mapped to `NOT_FOUND` + hint (SQ-11); cursor
+selectors scan the column — index-backed selection is T-315; `shared_key` semantics
+under-specified (SQ-13); the engine holds every cell in memory (SQ-12).
+

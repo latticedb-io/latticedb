@@ -11,7 +11,7 @@ use lattice_schema::catalog::Catalog;
 use lattice_schema::entities::*;
 use lattice_schema::key::Key;
 use lattice_schema::txn::{SchemaOp, SchemaState};
-use lattice_tx::{Command, EngineState, Kernel, KernelLimits, Reply, Subject};
+use lattice_tx::{Command, EngineState, Kernel, KernelLimits, KernelOptions, Reply, Subject};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub fn key(s: &str) -> Key {
@@ -37,7 +37,29 @@ pub fn limits() -> KernelLimits {
         journal_max_segment_bytes: 1 << 20,
         watch_buffer_events: 4096,
         reader_grace_secs: 0,
+        node_read_preview_cells: 4,
     }
+}
+
+/// A microsecond clock the test advances by hand — never wall-clock.
+pub type TestClock = std::sync::Arc<std::sync::atomic::AtomicU64>;
+
+pub fn test_clock() -> TestClock {
+    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000))
+}
+
+/// Kernel options over a test clock the test controls.
+pub fn options_with(clock: TestClock) -> KernelOptions {
+    KernelOptions {
+        limits: limits(),
+        cursor_idle_ttl_us: 60_000_000,
+        clock: std::sync::Arc::new(move || clock.load(std::sync::atomic::Ordering::Relaxed)),
+    }
+}
+
+/// Kernel options with a clock that never moves (no cursor ever expires).
+pub fn options() -> KernelOptions {
+    options_with(test_clock())
 }
 
 pub fn subject() -> Subject {
@@ -327,7 +349,7 @@ pub fn schema_ops() -> Vec<SchemaOp> {
 /// A fresh database with the fixture catalog installed (one schema txn).
 pub fn kernel(name: &str) -> Kernel {
     let dir = test_dir(name);
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     let reply = kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install fixture schema");
@@ -338,7 +360,7 @@ pub fn kernel(name: &str) -> Kernel {
 /// The database directory of a kernel made by [`kernel`] is the caller's:
 /// tests that reopen keep the path they passed to `Kernel::create`.
 pub fn reopen(dir: &std::path::Path) -> Kernel {
-    Kernel::open(dir, limits()).expect("reopen database").0
+    Kernel::open(dir, options()).expect("reopen database").0
 }
 
 /// Everything the in-memory state holds, as comparable text: catalog epoch,

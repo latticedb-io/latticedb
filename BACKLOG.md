@@ -153,6 +153,28 @@ none. T-313 maps the rejection to `FORBIDDEN` with a "state lock" hint so agents
 told to request a grant for a lock. Options: (a) keep `FORBIDDEN` + hint; (b) DEC adding a
 dedicated code (e.g. `ATTR_LOCKED`).
 
+**SQ-11 · `CURSOR_EXPIRED` has no code in the closed registry · found T-314 · owner
+decision required.** SPEC-02 §8 says an idle cursor is server-side GC'd and a later fetch
+gets `CURSOR_EXPIRED` — but the §7 registry (closed) lists no such code, and T-308's
+private value for it collides (ED-20). The kernel reports an expired or unknown cursor as
+`NOT_FOUND` with an "expired after N µs idle" hint and a malformed cursor request as
+`INVALID_KEY`. Options: (a) keep the mapping and reword §8; (b) DEC adding cursor codes.
+
+**SQ-12 · The engine holds every cell in memory · found T-314 · owner decision required.**
+ARCHITECTURE §5.2 / P14 put attribute truth in columnar parts read lock-free (P1: mmap);
+the engine's working state is a `BTreeMap` of ALL cells (`Machine::cells`) because
+predicates (`attr_cmp`, `latest_cmp`, `cell_count_gte`, …) evaluate over cells. T-314 made
+cursors read parts ⊕ staging (so parts are read truth and parity with the engine store is
+a tested invariant), but memory still scales with data. Options: (a) v1 keeps the
+in-memory store as the engine's working set and states it in ARCHITECTURE; (b) the engine
+reads through the column store (a real re-architecture; needed for OLAP-lite sizes).
+
+**SQ-13 · `shared_key` cursor parameters are under-specified · found T-314 · owner
+decision required.** SPEC-02 §8 lists `shared_key` among cursor indexes without naming its
+parameters; T-308's TLV decoder reads only a `SHARED_KEY` string; SPEC-04 §4 lists it
+again. The kernel implements it as "nodes whose scalar attribute `attr` equals `value`"
+(params: attr + value). Decide and pin the parameters in SPEC-02 §8 (T-315 builds the
+index on whatever is decided).
 ---
 
 ## Engineering debt register (tracked deferrals from M0/M1 implementation)
@@ -288,11 +310,15 @@ wire dispatch onto the kernel command API and deletes this path.
 way ED-14 did for node types. Verify R13 occupancy checks make it unreachable, or make
 codes lineage-stable.
 
-**ED-20 · Watch error codes collide with the closed registry · found T-313 · T-319.**
-`lattice-wire/src/watches.rs` defines `WATCH_NOT_FOUND = 0x0317` and
+**ED-20 · Wire-layer error codes collide with the closed registry · found T-313, extended
+T-314 · T-319.** `lattice-wire/src/watches.rs` defines `WATCH_NOT_FOUND = 0x0317` and
 `BAD_WATCH_PARAMS = 0x0318` — the registry (SPEC-02 §7) assigns those values to
-`FRAME_TOO_LARGE` and `CANCELLED`. Not yet fixed; T-319 maps them onto `NOT_FOUND` /
-`INVALID_KEY` or raises a DEC for new codes.
+`FRAME_TOO_LARGE` and `CANCELLED`. `lattice-wire/src/reads.rs` defines `CURSOR_EXPIRED =
+0x0313`, `CURSOR_NOT_FOUND = 0x0314`, `BAD_CURSOR_PARAMS = 0x0315`, `NOT_READABLE =
+0x0316` — the registry assigns them to `TXN_NESTED`, `RESUME_EXPIRED`,
+`VERSION_MISMATCH`, `CAPABILITY_MISMATCH`. Not yet fixed; T-319 maps them onto registered
+codes (the kernel already does: unknown/expired cursor → `NOT_FOUND`, malformed cursor
+request → `INVALID_KEY`) or raises a DEC for new codes.
 
 **ED-21 · Core value codec mis-decoded five types · found T-313 · FIXED in T-313.**
 `lattice-core::value_codec::decode_value` read its fixed-width integers from the padding
@@ -325,3 +351,23 @@ session-private clone of the engine state (O(state) per BEGIN); commit is refuse
 `ORDER_CONFLICT` if any other unit reached the live state meanwhile. Correct and simple;
 throughput of concurrent explicit txns was never a requirement in the spec — revisit with
 evidence once the listener runs real sessions.
+
+**ED-26 · Kernel reads are serialized with writes, not lock-free · T-314 design ·
+T-319.** ARCHITECTURE §5.2 / §8 describe lock-free epoch-snapshot readers. T-314 reads run
+on the sequencer thread between committed units: perfectly consistent (WPT-8.1 holds by
+construction) and fine for the single-session CLI, but a read blocks writes and vice
+versa. A lock-free read path (an immutable epoch view shared with reader threads) is
+needed before concurrent sessions exist.
+
+**ED-27 · Cursor v1 limits: no `order`, one column, no snapshot across fetches · T-314 ·
+revisit with the listener.** SPEC-02 §8 gives `CURSOR_OPEN` an `order` parameter; the
+kernel cursor is `(node, k)`-ascending only and has no order parameter (nothing is
+silently ignored — the parameter does not exist yet). A cursor pages ONE attribute column
+(the wire layer's multi-column cursor can open one per column). Each fetch sees the
+latest committed state; cells of the node being paged are not re-read, so a cursor is not
+a snapshot across fetches.
+
+**ED-28 · Parts are read into a cache, not mmap'd · T-314 · M5.** P1 names mmap reads.
+Parts are `read()` + parsed into an in-process cache on first use (dropped at checkpoint);
+correct, costs memory. The checkpoint also parses every part twice (cells, then the read
+cache). mmap and a single parse are hardening work with evidence.

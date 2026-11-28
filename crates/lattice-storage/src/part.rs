@@ -657,6 +657,13 @@ impl Part {
         self.runs[run_idx].node
     }
 
+    /// The run's key span from the run directory: `(first_k, cell_count)` —
+    /// dense runs cover `first_k ..< first_k + cell_count`. Lets a reader
+    /// skip a whole run by key range WITHOUT decoding it.
+    pub fn run_span(&self, run_idx: usize) -> Option<(u64, u32)> {
+        self.runs.get(run_idx).map(|e| (e.first_k.0, e.cell_count))
+    }
+
     /// Zone bounds of a run (`None` when the value type is not zoneable).
     pub fn run_zone(&self, run_idx: usize) -> Option<(ZoneBytes, ZoneBytes)> {
         let e = &self.runs[run_idx];

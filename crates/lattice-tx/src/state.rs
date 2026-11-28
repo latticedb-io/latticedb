@@ -115,6 +115,11 @@ struct WriteCtx<'a> {
     state_key: &'a Key,
 }
 
+/// The staging tail: cells written since the last checkpoint, by
+/// `(node, attr id)` → `k → (lsn, value)`. Parts hold everything up to the
+/// checkpoint; a column read is parts ⊕ staging (ARCHITECTURE §8 "staging").
+pub type Staging = BTreeMap<(u32, u16), BTreeMap<u64, (u64, Value)>>;
+
 /// The in-memory database: schema + engine (structure, cells, FSM, timers).
 #[derive(Clone)]
 pub struct EngineState {
@@ -122,6 +127,9 @@ pub struct EngineState {
     prop: Propagator,
     /// Committed units applied so far — the explicit-txn conflict stamp.
     pub write_seq: u64,
+    /// Cells written since the last checkpoint (cleared by the kernel's
+    /// checkpoint once they live in parts).
+    staging: Staging,
     pending: Vec<Event>,
     /// Enabled-action sets of the nodes a unit touches, taken before it
     /// applied; the post-quiesce diff yields `action_enabled` / `disabled`.
@@ -155,6 +163,7 @@ impl EngineState {
             prop: Propagator::new(machine, &compiled),
             schema,
             write_seq: 0,
+            staging: Staging::new(),
             pending: Vec::new(),
             enabled_before: BTreeMap::new(),
             engine_spawns: VecDeque::new(),
@@ -171,6 +180,16 @@ impl EngineState {
 
     pub fn arrays(&self) -> &GraphArrays {
         &self.prop.machine.arrays
+    }
+
+    /// The staging tail (read-only view for column reads).
+    pub fn staging(&self) -> &Staging {
+        &self.staging
+    }
+
+    /// Checkpoint done: everything staged now lives in parts.
+    pub fn clear_staging(&mut self) {
+        self.staging.clear();
     }
 
     /// Events of the last committed unit, in journal order (drained by the
@@ -1182,7 +1201,9 @@ impl EngineState {
                     .arrays
                     .delete_node(node)
                     .map_err(|e| invariant(format!("DEL_VERTEX {} failed: {e}", node.0)))?;
+                // Cells die with their node — in the store and in staging.
                 self.prop.machine.drop_cells(node);
+                self.staging.retain(|(n, _), _| *n != node.0);
                 self.pending.push(Event::simple(EventKind::Struct, node));
             }
             RecordData::AddEdge {
@@ -1350,8 +1371,18 @@ impl EngineState {
         let first = self.prop.machine.max_k(node, attr).is_none();
         self.prop
             .machine
-            .set_cell(node, attr, KeyIndex(k), value, Lsn(lsn))
+            .set_cell(node, attr, KeyIndex(k), value.clone(), Lsn(lsn))
             .map_err(|e| invariant(format!("cell write rejected after sequencing: {e}")))?;
+        // Stage the cell for column reads until the next checkpoint.
+        let attr_id = self
+            .prop
+            .machine
+            .compiled_attr_id(attr)
+            .ok_or_else(|| invariant(format!("cell write `{attr}`: no compiled id")))?;
+        self.staging
+            .entry((node.0, attr_id.0))
+            .or_default()
+            .insert(k, (lsn, value));
         if first {
             let count = self
                 .prop

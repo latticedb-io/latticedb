@@ -7,16 +7,14 @@
 M0–M2 tagged. M3 in progress under the re-cut order (MANIFEST §10 "Sequence re-cut",
 2026-11-28): core first, then listeners, external surfaces last.
 
-**T-313 kernel assembly DELIVERED → `review` (Supervisor, deferred to V1 gate).** The
-database now runs end to end in library mode: create → write (structure, attributes incl.
-row append, actions with spawn, schema txns, grants) → explicit txns → checkpoint → close →
-reopen with `live = replay`. Whole workspace: **259 tests green, `cargo fmt --check`
-clean, `cargo clippy --workspace --all-targets -- -D warnings` clean.**
+- **T-313 kernel assembly — `review`** (committed `04342fd`, pushed).
+- **T-314 kernel read path — `review`** (committed and pushed after T-313; see
+  `git log`). The database now reads as well as it writes in library mode:
+  snapshot / time travel / node read / cursors over parts ⊕ staging / blockers /
+  history. Whole workspace: **271 tests green, `cargo fmt --check` clean,
+  `cargo clippy --workspace --all-targets -- -D warnings` clean.**
 
-Everything is UNCOMMITTED in the latticedb working tree (docs + code) — commit pending
-owner. Suggested split: (1) `DEC: sequence re-cut — core + CLI first, external surfaces
-last` for MANIFEST/ARCHITECTURE/TASKS/BACKLOG/README/AGENTS/STATE; (2) `T-313: kernel
-assembly — durable write path, recovery, explicit txns, sequencer` for the code.
+Both tasks wait for the Supervisor (deferred to the V1 gate). Working tree clean.
 
 ## Decided this session (2026-11-28)
 
@@ -36,17 +34,38 @@ assembly — durable write path, recovery, explicit txns, sequencer` for the cod
 - **SQ-09** logical time has no journal record — blocks the timer path (timer-fired
   actions, lag/deadline recovery) and journal-authored graph timestamps.
 - **SQ-10** no wire code for a state-locked attribute write (mapped to `FORBIDDEN`).
+- **SQ-11** `CURSOR_EXPIRED` has no registered code (mapped to `NOT_FOUND` + hint).
+- **SQ-12** the engine holds every cell in memory — decide the memory model.
+- **SQ-13** `shared_key` cursor parameters under-specified (blocks that index in T-315).
 
 ## Next (in order = TASKS.md M3 ID order)
 
-1. **T-314 kernel read path** — NOT started. Rule-10 re-read before starting: ARCH §5.2,
-   SPEC-02 §8, SPEC-01 §6/§12, TASKS.md T-314 row (WPT-8.1–8.4 kernel forms, SGT-6.2).
-   Build on `lattice_tx::Kernel::read_state(session)` / `EngineState`; note the kernel
-   keeps ALL cells in memory (`Machine::cells`) — "values from parts" applies to restore,
-   so cursors can read the in-memory store first and prove parity with parts.
-   Watch out: `edge_count()` counts LIVE edges, `edge_slots()` is the id space.
-2. T-315 secondary indices → T-316 full CLI → T-317 / T-318 kernel semantics completion
-   → T-319 listeners → T-320 WPT socket-level pass.
+1. **T-315 secondary indices — NOT started.** Rule-10 re-read first: SPEC-01 §12,
+   ARCH §5.2, SPEC-02 §8, TASKS.md T-315 row (SGT-12.1, SGT-12.2). Build on
+   `lattice_tx::read::select_nodes` — T-314's selectors are scan-based (ByState,
+   AttrPresence, SharedKey, TypeScan); T-315 adds the IndexDef views, re-points the
+   selectors at them, and proves "index == scan" and "drop + rebuild == identical"
+   (SGT-12.1/12.2). `shared_key` parameters are SQ-13 — ask before building that index.
+2. T-316 full CLI → T-317 / T-318 kernel semantics completion → T-319 listeners →
+   T-320 WPT socket-level pass.
+
+## T-314 notes (for whoever reviews or continues)
+
+- **Model:** reads run on the sequencer thread between committed units (consistent by
+  construction, not lock-free — ED-26). Cursors read parts ⊕ staging; pushdown by
+  liveness / selection / run directory / zone maps; one decode per node per cursor.
+  `at_epoch` rebuilds a throwaway state from snapshot + parts + journal prefix.
+- **API:** `lattice_tx::{Read, ReadReply, Selector, CursorFilter, Budget}` +
+  `Kernel::read(session, &Read)`; `KernelOptions { limits, cursor_idle_ttl_us, clock }`
+  (the clock is injected: ephemeral session state only). `Kernel::create/open` now take
+  `KernelOptions` (tests: `common::options()`, `options_with(clock)`).
+- **Tests:** `crates/lattice-tx/tests/kernel_read_path.rs` (12 tests: parity in every
+  layer state, WPT-8.1..8.4, SGT-6.2, zone pushdown, node read, history, cursor ttl,
+  selectors, scopes/read-your-writes). The 1M-cell test takes ~9 s / ~470 MB.
+- **Bugs the read tests caught and fixed in the read path:** paged cursor re-emitted its
+  first page forever; staged-only nodes bypassed selection; I64-stored part cells not
+  re-typed; upper-bound typo in the value filter.
+- **Gaps recorded (BACKLOG):** ED-26, ED-27, ED-28, SQ-11, SQ-12, SQ-13, ED-20 extended.
 
 ## T-313 notes (for whoever reviews or continues)
 

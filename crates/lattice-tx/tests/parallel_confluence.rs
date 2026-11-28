@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// spread under them.
 fn database(name: &str, projects: usize, tasks: usize) -> (PathBuf, Kernel, Vec<NodeId>) {
     let dir = test_dir(name);
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -166,7 +166,7 @@ fn confluence_under_parallel_load_converges_to_journal_replay() {
     let live = digest(kernel.state());
     kernel.close().expect("close");
 
-    let (reopened, report) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, report) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(report.txns_replayed, txns);
     assert_eq!(report.last_lsn, last);
     assert_eq!(
@@ -213,7 +213,7 @@ fn wpt_5_1_parallel_pipelining_variant() {
     );
     let live = digest(kernel.state());
     kernel.close().expect("close");
-    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, _) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(
         digest(reopened.state()),
         live,
@@ -282,7 +282,7 @@ fn single_node_contention_preserves_each_writers_order() {
         );
     }
     kernel.close().expect("close");
-    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, _) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(log_cells(&reopened, task), cells);
 }
 
@@ -355,7 +355,7 @@ fn inline_sequencer_is_dense_and_exact() {
         assert_eq!(kernel.last_lsn(), lsn0 + 3 * (i as u64 + 1));
     }
     kernel.close().expect("close");
-    let (reopened, report) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, report) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(report.last_lsn, lsn0 + 6);
     assert_eq!(log_cells(&reopened, tasks[0]), vec![0]);
     assert_eq!(log_cells(&reopened, tasks[1]), vec![1]);

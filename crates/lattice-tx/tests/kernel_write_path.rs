@@ -152,7 +152,7 @@ fn state_key(kernel: &Kernel, node: NodeId) -> Key {
 #[test]
 fn wpt_5_2_txn_atomicity_none_applied_and_error_names_the_failing_command() {
     let dir = test_dir("wpt_5_2");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -206,7 +206,7 @@ fn wpt_5_2_txn_atomicity_none_applied_and_error_names_the_failing_command() {
     refused(kernel.commit_txn(0), codes::INVALID_KEY);
 
     kernel.close().expect("close");
-    let (reopened, report) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, report) = Kernel::open(&dir, options()).expect("reopen");
     // schema txn + the project's creation — nothing of the aborted txn.
     assert_eq!(report.txns_replayed, 2);
     assert_eq!(
@@ -221,7 +221,7 @@ fn wpt_5_2_txn_atomicity_none_applied_and_error_names_the_failing_command() {
 #[test]
 fn explicit_txn_commits_as_one_journal_txn_with_one_lsn_range() {
     let dir = test_dir("txn_commit");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -266,7 +266,7 @@ fn explicit_txn_commits_as_one_journal_txn_with_one_lsn_range() {
 
     let live = digest(kernel.state());
     kernel.close().expect("close");
-    let (reopened, report) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, report) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(
         report.txns_replayed, 3,
         "schema + project + the explicit txn"
@@ -293,7 +293,7 @@ fn explicit_txn_commits_as_one_journal_txn_with_one_lsn_range() {
 #[test]
 fn txn_rollback_nesting_and_conflict() {
     let dir = test_dir("txn_controls");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -343,7 +343,7 @@ fn txn_rollback_nesting_and_conflict() {
     );
     let live = digest(kernel.state());
     kernel.close().expect("close");
-    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, _) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(
         digest(reopened.state()),
         live,
@@ -360,7 +360,7 @@ fn txn_rollback_nesting_and_conflict() {
 #[test]
 fn wpt_7_1_row_append_batch_is_one_journal_record_and_gaps_survive() {
     let dir = test_dir("wpt_7_1");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -469,7 +469,7 @@ fn wpt_7_1_row_append_batch_is_one_journal_record_and_gaps_survive() {
 
     let live = digest(kernel.state());
     kernel.close().expect("close");
-    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, _) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(digest(reopened.state()), live);
 }
 
@@ -481,7 +481,7 @@ fn wpt_7_1_row_append_batch_is_one_journal_record_and_gaps_survive() {
 #[test]
 fn wpt_7_3_cascade_guard_and_ordered_del_vertex_records() {
     let dir = test_dir("wpt_7_3");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -516,7 +516,7 @@ fn wpt_7_3_cascade_guard_and_ordered_del_vertex_records() {
     );
 
     kernel.close().expect("close");
-    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, _) = Kernel::open(&dir, options()).expect("reopen");
     for node in [project, task, subtask] {
         assert!(!reopened.state().arrays().is_alive(node));
     }
@@ -527,7 +527,7 @@ fn wpt_7_3_cascade_guard_and_ordered_del_vertex_records() {
 #[test]
 fn cascade_delete_removes_incident_edges_first() {
     let dir = test_dir("cascade_edges");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -577,7 +577,7 @@ fn cascade_delete_removes_incident_edges_first() {
 #[test]
 fn wpt_7_4_action_error_shape_then_success() {
     let dir = test_dir("wpt_7_4");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -617,7 +617,7 @@ fn wpt_7_4_action_error_shape_then_success() {
     assert_eq!(state_key(&kernel, task), key("done"));
 
     kernel.close().expect("close");
-    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, _) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(state_key(&reopened, task), key("done"));
 }
 
@@ -628,7 +628,7 @@ fn wpt_7_4_action_error_shape_then_success() {
 #[test]
 fn sgt_9_2_state_motion_is_one_journaled_action_record() {
     let dir = test_dir("sgt_9_2");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -687,7 +687,7 @@ fn sgt_9_2_state_motion_is_one_journaled_action_record() {
 #[test]
 fn sgt_9_5_spawn_effect_journals_engine_add_vertex_in_same_txn() {
     let dir = test_dir("sgt_9_5");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -740,7 +740,7 @@ fn sgt_9_5_spawn_effect_journals_engine_add_vertex_in_same_txn() {
     let live = digest(kernel.state());
     let alive = kernel.state().arrays().alive_count();
     kernel.close().expect("close");
-    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    let (reopened, _) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(
         digest(reopened.state()),
         live,
@@ -756,7 +756,7 @@ fn sgt_9_5_spawn_effect_journals_engine_add_vertex_in_same_txn() {
 #[test]
 fn sft_6_4_append_after_torn_tail_continues_gap_free() {
     let dir = test_dir("sft_6_4");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -787,7 +787,7 @@ fn sft_6_4_append_after_torn_tail_continues_gap_free() {
         .write_all(&torn)
         .expect("append torn frame");
 
-    let (mut reopened, report) = Kernel::open(&dir, limits()).expect("reopen");
+    let (mut reopened, report) = Kernel::open(&dir, options()).expect("reopen");
     assert_eq!(report.torn_tail_dropped, torn.len() as u64);
     assert_eq!(
         report.txns_replayed,
@@ -807,7 +807,7 @@ fn sft_6_4_append_after_torn_tail_continues_gap_free() {
     );
     let after_write = digest(reopened.state());
     reopened.close().expect("close");
-    let (again, report) = Kernel::open(&dir, limits()).expect("reopen again");
+    let (again, report) = Kernel::open(&dir, options()).expect("reopen again");
     assert_eq!(report.txns_replayed, journal_txns(&dir).len());
     assert_eq!(report.torn_tail_dropped, 0);
     assert_eq!(digest(again.state()), after_write);
@@ -820,7 +820,7 @@ fn sft_6_4_append_after_torn_tail_continues_gap_free() {
 #[test]
 fn cell_conformance_refusals_leave_the_store_untouched() {
     let dir = test_dir("conformance");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -942,7 +942,7 @@ fn cell_conformance_refusals_leave_the_store_untouched() {
 #[test]
 fn state_lock_refuses_writes_to_the_locked_set_only() {
     let dir = test_dir("state_lock");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -1000,7 +1000,7 @@ fn state_lock_refuses_writes_to_the_locked_set_only() {
 #[test]
 fn node_ref_target_cannot_be_deleted_while_referenced() {
     let dir = test_dir("node_ref");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");
@@ -1034,7 +1034,7 @@ fn node_ref_target_cannot_be_deleted_while_referenced() {
 #[test]
 fn structure_refusals_follow_the_hint_law() {
     let dir = test_dir("hints");
-    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    let mut kernel = Kernel::create(&dir, 1, options()).expect("create database");
     kernel
         .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
         .expect("install schema");

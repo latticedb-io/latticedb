@@ -19,15 +19,23 @@ pub mod error;
 pub mod handle;
 pub mod kernel;
 pub mod lock;
+pub mod read;
 pub mod records;
 pub mod state;
 
 pub use command::{Command, Reply};
 pub use error::{KernelError, TxError, codes};
 pub use handle::{KernelHandle, WriterPool, conflict_domain, shutdown_shared};
-pub use kernel::{CheckpointReport, Kernel, KernelLimits, OpenReport, WatchEvent};
+pub use kernel::{
+    CheckpointReport, Clock, Kernel, KernelLimits, KernelOptions, OpenReport, WatchEvent,
+};
 pub use lattice_storage::journal::TxnLsns;
 pub use lock::SubtreeLockTable;
+pub use read::{
+    Batch, BlockerEntry, Budget, CellRow, ColumnSchema, CursorFilter, EdgeRow, GraphView,
+    HistoryEvent, NodeRow, NodeView, Read, ReadReply, Selector, VectorPreview, blockers_of,
+    graph_view, node_view, select_nodes,
+};
 pub use records::{Record, RecordData, RecordError, Row};
 pub use state::{EngineState, Event, EventKind, Planned, Subject};
 
