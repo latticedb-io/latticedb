@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Which nodes a cursor covers. Every selector picks a NODE SET. The
 /// `shared_key` cursor of SPEC-02 §8 is deliberately absent: it is not a
-/// node-set selector but the RECORD cursor over vectors that share a node's
+/// node-set selector but key-aligned cursor over vectors that share a node's
 /// key (`docs/MODEL.md` §5, BACKLOG SQ-13) — it lands with T-315 once the
 /// owner confirms its parameters.
 #[derive(Debug, Clone, PartialEq)]

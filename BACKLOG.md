@@ -33,6 +33,53 @@ Any v2 replication design starts from this seam; no V1 work is authorized.
 
 ## Spec questions (owner decisions pending — no silent drift)
 
+> **Decision queue.** Every open decision, ordered by the milestone it blocks. "Rec." is
+> the architect pair's recommendation; the entry below it has the reasoning. Nothing in
+> this queue may be implemented as if it were settled.
+
+| # | SQ | Blocks | One line | Rec. |
+|---|---|---|---|---|
+| 1 | SQ-17 | T-317 | record field position taken from the key's digits, not declaration order | declaration order |
+| 2 | SQ-23 | now | journal frame cap only on recovery → large records become unreadable | reject at append, cap from config |
+| 3 | SQ-24 | T-317 | `DropGraph` ignores live nodes | `R13_IN_USE` while nodes live |
+| 4 | SQ-14 | T-315 | first `k` of a vector axis | 1 (k = 0 is the scalar cell) |
+| 5 | SQ-15 | T-317 | point append at `k == current_max` | refuse (append-only) |
+| 6 | SQ-18 | T-317 | `required` / `default` undefined | required before leaving initial state; default at read |
+| 7 | SQ-20 | T-317 | `payload_type` not enforced | enforce with `SCHEMA` |
+| 8 | SQ-19 | T-318 | `write_scope` vocabulary | kernel scopes only |
+| 9 | SQ-01 | T-317 | no RemoveAttribute / DeprecateAttribute op | add both |
+| 10 | SQ-02 | T-317 | no AlterNodeType (attach a set to a live type) | add `AlterNodeType` |
+| 11 | SQ-09, SQ-27 | T-317/318 | no journal record for time; timer path has no task | `ADVANCE_TIME` record + a task row |
+| 12 | SQ-16 | T-314 review | unit of the global epoch marker | COMMIT LSN |
+| 13 | SQ-42 | T-313 review | lineage of codes / ids not in the specs | first appearance, pinned in SPEC-03 |
+| 14 | SQ-28 | T-313 review | cascade delete vs outside edges and refs | confirm as implemented |
+| 15 | SQ-29 | T-319 | one explicit txn per database, optimistic commit | confirm for v1 |
+| 16 | SQ-30 | T-319 | watch buffer drops oldest vs "never drops" | per-subscriber credit-bounded queues |
+| 17 | SQ-13 | T-315 | `shared_key` cursor parameters | key_type · columns? · scope |
+| 18 | SQ-33 | T-315 | Arrow schemas, `order`, `window` undefined | decide with T-315 |
+| 19 | SQ-12 | T-315, SQ-43 | engine holds every cell in memory | decided by SQ-43 targets |
+| 20 | SQ-43 | SQ-12, M5 | no scale / performance targets | set them |
+| 21 | SQ-26 | T-316 | when checkpoints and merges run | explicit + one size trigger, synchronous |
+| 22 | SQ-25 | T-316 | zstd ON in spec, OFF in build | ON, as the spec says |
+| 23 | SQ-22 | T-316, T-319 | who creates subjects and verifiers | CLI commands + pinned secrets file |
+| 24 | SQ-21 | T-318, T-319 | allow/deny journaling; no logging facility | `AUTHZ` record + `tracing` |
+| 25 | SQ-31 | T-316 | CLI command set and output | see entry |
+| 26 | SQ-07 | T-316, T-319 | Host → Database has no task | V1: multi-Database |
+| 27 | SQ-32 | T-319 | tag and record registries only in code | write into the specs by DEC |
+| 28 | SQ-04 | T-319 | control-frame wire contract unpinned | DEC in SPEC-02 §12 |
+| 29 | SQ-10 | T-317 | no code for a state-locked write | add `ATTR_LOCKED` |
+| 30 | SQ-11 | T-319 | `CURSOR_EXPIRED` has no code | add the code |
+| 31 | SQ-05 | T-319 | PROXY v2 length read little-endian | upstream network order |
+| 32 | SQ-34 | T-402 | TLS design | rustls, pin frame + config |
+| 33 | SQ-35 | T-401 | admin gRPC has no proto | design together |
+| 34 | SQ-36 | T-312 | `schema_read` has no source | wire `SCHEMA_READ` |
+| 35 | SQ-37 | T-403, T-404 | REST/WS and SPA shapes | design together |
+| 36 | SQ-06, SQ-38 | T-405 | pooler language and v1 scope | Rust per ARCH §3 |
+| 37 | SQ-39 | T-407 | backup and audit export formats | checkpoint + copy; pinned export |
+| 38 | SQ-40 | T-311 | Kotlin SDK surface | typed mirror of the kernel API |
+| 39 | SQ-41 | T-504 | index-module seam undefined | define the trait |
+
+
 **SQ-01 · RemoveAttribute op missing from the §16 registry · found T-209 ·
 owner decision required.** SPEC-01 §16's closed op registry (28 ops) has
 RemoveEnumValue / RemoveRecordField / RemoveState / RemoveRule — but NO
@@ -177,7 +224,7 @@ wrong: T-308's TLV decoder (`SharedKey { key: String }` — a node-set selector)
 (`docs/MODEL.md` §5): every other index kind selects a NODE SET; `shared_key` is about
 the KEY — the vectors that share a node's key (one KeyType axis per node, SPEC-01 §6)
 and, across nodes, the vectors of nodes whose types declare the same KeyType. The
-`shared_key` cursor is the RECORD cursor — the `merge-join-on-key` kernel (D-10.4) over
+`shared_key` cursor is key-aligned cursor — the `merge-join-on-key` kernel (D-10.4) over
 those columns, yielding `(node, k) → {column: value}` records with absent cells, for one
 node or for several nodes combined into one columnar table keyed by `(node_id, k)`.
 **Proposed parameters (owner to confirm before T-315 builds it):** `key_type` (selects
@@ -202,6 +249,169 @@ decision required.** "Epoch" is both the per-node change counter and "the global
 marker" (ARCHITECTURE §4). The contract does not name the marker's unit; the kernel uses
 the COMMIT LSN of the last unit a read saw. Confirm, and pin it in SPEC-02 §8
 (`at_epoch` takes an LSN).
+
+**SQ-17 · Record field position: declaration order vs the key's trailing digits · found
+on the model re-read 2026-11-28 · defect, owner confirmation.** SPEC-01 §5: a record cell
+carries "a presence bitmask (u64, one bit per declared field position)"; fields added
+later read as absent. The engine (`dispatch.rs::field_index`) takes a field's position
+from the digits at the END OF ITS KEY (`f0`, `f1`) — a bundle convention — and returns
+`usize::MAX` otherwise, so a record with fields `amount`/`note` can never satisfy
+`cell_field_count_gte`. Recommendation: position = declaration order (resolve through the
+record type), never the key text.
+
+**SQ-18 · `required` and `default` on AttributeDef have no defined behaviour · found on
+the model re-read 2026-11-28 · owner decision required.** Both are serialized and never
+used. Recommendation: `required` = the attribute must have a value before the node leaves
+its initial state (enforced on transitions, not on creation); `default` = returned by
+reads when the cell is absent, never stored (SPEC-01 §5 says this for record fields).
+
+**SQ-19 · `write_scope` values · found on the model re-read 2026-11-28 · owner decision
+required.** AttributeDef and AttributeSet carry `write_scope: scope?` ("an extra scope
+required to write", SGT-7.2). Are the values the five kernel scopes, or free-form names
+defined by Roles? Recommendation: kernel scopes only (`invoke_action`, `administer`, …) —
+a free-form vocabulary would be a second authorization model.
+
+**SQ-20 · Action `payload_type` is not enforced · found on the model re-read 2026-11-28 ·
+owner confirmation.** A transition may declare `payload_type: record_key`; the compiler
+checks the record exists, dispatch never checks the payload against it. Recommendation:
+reject a non-conforming payload with `SCHEMA` at the check step.
+
+**SQ-21 · Authorization decisions must be journaled, and there is no log facility · found
+on the model re-read 2026-11-28 · owner decision required.** P9 / SPEC-01 §14: "every
+allow/deny decision lands in the journal". SPEC-03 §6 has `GRANT` / `REVOKE` records but
+no record type for a decision. The contract also requires a security log, `PART_REBUILT`
+and torn-tail warnings, configurable log levels — and the workspace has no logging crate.
+Recommendation: one DEC adding an `AUTHZ` journal record; `tracing` + a structured log
+sink; the security log = the auth events of that stream, filtered.
+
+**SQ-22 · Subjects and credentials: who creates them, where · found on the model re-read
+2026-11-28 · owner decision required.** SCRAM needs verifiers in a "host-managed secrets
+file (admin-managed; `pg_authid` pattern)"; the policy table names subjects. No command,
+plane or file format is defined for creating a user / setting a password. Blocks the CLI
+(T-316) and the listeners (T-319). Recommendation: CLI `user create|passwd|drop` writing
+the secrets file; file format pinned in SPEC-02 §4.
+
+**SQ-23 · Journal frame cap is enforced only on recovery · found on the model re-read
+2026-11-28 · defect.** `journal::recover` treats a frame over 64 MiB as corrupt/torn; the
+writer has no cap. A record over 64 MiB (e.g. a row-append batch of large `bytes` values)
+is written and then unreadable at the next open — silent data loss. The cap is also a
+hardcoded parameter. Recommendation: reject at append with `LIMIT_EXCEEDED`, cap from
+`storage` config, batch split in the row-append planner.
+
+**SQ-24 · `DropGraph` ignores live nodes · found on the model re-read 2026-11-28 ·
+defect.** The op rejects only when grants reference the graph; nodes of that graph stay
+with a `graph_id` that no longer exists. Recommendation: R13 `R13_IN_USE` while the graph
+has live nodes (deprecate → drain → remove).
+
+**SQ-25 · zstd: the spec says ON, the build is OFF · found on the model re-read
+2026-11-28 · owner decision required.** SPEC-03 §9.5 "Default zstd stage ON for parts
+above size threshold — CONFIRMED"; ED-09 keeps the feature off by default. Decide which
+is right for v1 and align the other.
+
+**SQ-26 · Checkpoint and merge policy · found on the model re-read 2026-11-28 · owner
+decision required.** T-313 writes parts and a snapshot only on an explicit, synchronous
+`checkpoint()`. ARCH §8 / SPEC-03 §7 describe staging buffers → a background assembler →
+parts, size-tiered background merges, and triggers by part count / staging bytes. Nothing
+says WHEN a checkpoint runs. Decide: (a) v1 = explicit checkpoints (CLI / admin) plus one
+automatic trigger (journal bytes since the last checkpoint, a config value), synchronous;
+(b) the background assembler now. Also: which host-config group owns the kernel limits
+added in T-314 (watch buffer, preview cells, reader grace).
+
+**SQ-27 · The timer path has no task and no time source · found on the model re-read
+2026-11-28 · owner decision required (extends SQ-09).** Timers exist in the engine
+(T-205) but nothing advances journal time in a running database, timer-fired transitions
+never reach the journal, and no TASKS row covers it. Decide: who advances time (a host
+thread on a monotonic clock, journaled), and where the work lands (T-317, T-318 or a new
+row).
+
+**SQ-28 · Cascade delete: what happens to edges and references from outside · found on
+the model re-read 2026-11-28 · owner confirmation.** T-313 removes the subtree's
+dependency edges (both directions) and refuses the delete while any node outside the
+subtree holds a `node_ref` into it. The contract says only "subtree removed". Confirm or
+change.
+
+**SQ-29 · Explicit transactions as implemented · found on the model re-read 2026-11-28 ·
+owner confirmation.** One explicit txn per database; its commands run on a private clone
+of the engine state; commit is refused `ORDER_CONFLICT` when another writer changed the
+database meanwhile (ED-25). SPEC-02 §5 does not say whether two sessions may hold explicit
+txns at once. Confirm for v1.
+
+**SQ-30 · Watch delivery: bounded buffer vs credit windows · found on the model re-read
+2026-11-28 · owner decision required.** SPEC-02 §6: the server "queues, never drops"
+behind the client's credit window. The kernel keeps a bounded event buffer and drops the
+oldest (a config size). Reconcile before the listener (T-319): the kernel buffer becomes a
+per-subscriber queue bounded by credit, or the ring stays and the wire layer pages it.
+
+**SQ-31 · The CLI's command set and output · found on the model re-read 2026-11-28 ·
+owner decision required.** T-316 says "full CLI" with no command list or output format.
+Recommendation: `init|open|verify|checkpoint|compact`, `schema plan|apply|bundle`, `user
+…` (SQ-22), every write command, `txn begin|commit|rollback`, every read, `watch`;
+output = aligned text for humans, one documented flag for a machine-readable form.
+
+**SQ-32 · Tag and record registries exist only in code · found on the model re-read
+2026-11-28 · owner decision required.** SPEC-02 §2 says TLV tags are "per §7–§10", but
+§7–§10 name no numbers: command tags live in `lattice_wire::commands::tags`, wire value
+encoding in a placeholder decoder (ED-18), journal record layouts in `lattice_tx::records`.
+Decide: (a) write both registries into the specs by DEC (golden tests keep code in step);
+(b) declare them code-owned with mandatory golden tests. Either way one registry per kind.
+
+**SQ-33 · Arrow schemas, `order`, `window` · found on the model re-read 2026-11-28 ·
+owner decision required.** "Arrow schema stable across batches" (WPT-8.3) names no
+schema; `CURSOR_OPEN {…, order, window}` names no values. Needed before T-315 finishes
+and before T-319 encodes DATA_ARROW: the Arrow schemas for snapshot / cursor /
+`shared_key` batches, the legal `order` values, and what `window` is.
+
+**SQ-34 · TLS design · found on the model re-read 2026-11-28 · owner decision required
+(blocks T-402).** The handshake shows `C → STARTTLS` but the message registry has no
+STARTTLS type (0x04 is unassigned). Unpinned: the frame, the TLS implementation
+(recommendation: rustls), minimum 1.2 / preferred 1.3, where certificates and the CA come
+from in host config, ALPN for the admin listener.
+
+**SQ-35 · Admin gRPC has no proto · found on the model re-read 2026-11-28 · owner
+decision required (blocks T-401).** SPEC-02 §11 lists four services in prose ("full
+.proto in implementation repo, shapes fixed here" — the shapes are bullets). Metric names
+are also unnamed. The proto must be designed with you: methods, messages, metric list.
+
+**SQ-36 · `schema_read` has no source · found on the model re-read 2026-11-28 · owner
+decision required (blocks T-312).** MCP tool 6 `schema_read` maps to "(admin read /
+catalog dump)": the wire has no command that returns the catalog. Admin plane (M4) or a
+wire read command? Recommendation: a wire read (`SCHEMA_READ`), so the gateway stays a
+pure protocol client (P12).
+
+**SQ-37 · REST/WS gateway and SPA have no shapes · found on the model re-read 2026-11-28
+· owner decision required (blocks T-403, T-404).** "SPEC-04 shapes over REST" and "SPEC-04
+§4 shapes" give tool names only. Needed: the resource model, the WebSocket channel
+contract, and which views the "minimal" SPA must show.
+
+**SQ-38 · Pooler v1 scope and wire details · found on the model re-read 2026-11-28 ·
+owner decision required (blocks T-405; language is SQ-06).** "Identity translation, churn
+absorption, credential mapping": how the client authenticates to the pooler, how the
+pooler authenticates upstream (SCRAM with a pooler-held credential, or a token — tokens
+are v1.x), whether the pooler terminates TLS.
+
+**SQ-39 · Backup and audit export formats · found on the model re-read 2026-11-28 ·
+owner decision required (blocks T-407, T-503).** "Each Database owns a complete,
+independently back-upable file set" — no procedure says how (checkpoint + copy?).
+"Segment export → reimport verify" names no export format.
+
+**SQ-40 · Kotlin SDK surface · found on the model re-read 2026-11-28 · owner decision
+required (blocks T-311).** "Kotlin SDK core" with no API definition. Needed: typed
+commands mirroring `lattice_tx::Command`/`Read`, coroutine API shape, how Arrow batches
+are exposed, error mapping. (Toolchain is decided — STATE.md.)
+
+**SQ-41 · The index-module seam is undefined · found on the model re-read 2026-11-28 ·
+owner decision required (blocks T-504).** "Index-module seam validated (ANN/BM25
+stubs)": no seam — trait, registration point, or lifecycle — is written anywhere.
+
+**SQ-42 · Lineage of node-type codes, graph ids and attribute ids is not in the specs ·
+found on the model re-read 2026-11-28 · owner confirmation.** Snapshots store a type code
+per node and parts store attribute ids, so the assignment must be rebuildable. T-313
+implemented "index of first appearance in the schema-op history" (ED-14). Confirm and pin
+it in SPEC-03 §3.
+
+**SQ-43 · Scale and performance targets · found on the model re-read 2026-11-28 · owner
+decision required.** No targets exist for nodes per Database, cells per node, or
+latency. They decide SQ-12 (memory model), the M5 gates, and whether mmap matters.
 
 ---
 

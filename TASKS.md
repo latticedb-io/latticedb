@@ -84,7 +84,7 @@ corrected 2026-11-28 from the crate manifests and test imports — Supervisor ve
 | T-310 | Concurrent subtree-locked writers + sequencer | ARCH §8 | confluence under parallel load; WPT-5.1 parallel variant | T-307 | done (in-memory fact path replaced by the durable kernel in T-313; its 5 tests ported) |
 | T-313 | **Kernel assembly**: library-mode database — create/open/recover/checkpoint/close; write path validate → U-lock → sequencer → durable journal → apply → propagation → quiesce → watches; full fact set (structure incl. edges, attributes incl. row append, actions, schema txns, grants); multi-command txns | ARCH §5.1, §5.3, §8; SPEC-02 §5; SPEC-03 §1 (D2), §3, §6; SPEC-01 §9, §16 | WPT-5.2, WPT-7.1, WPT-7.3, WPT-7.4 (kernel forms); SGT-1.1, SGT-3.3, SGT-9.2, SGT-9.5 (kernel / journal forms); SFT-1.1 (kernel form: live = replay, 3 fresh copies); SFT-3.1; SFT-6.4 | T-104–T-110, T-202–T-208, T-310 | review (Supervisor, deferred to V1 gate) — tests: `lattice-tx` kernel_write_path, kernel_recovery, records_golden, parallel_confluence |
 | T-314 | **Kernel read path**: snapshot (epoch-consistent, at_epoch), node read, cursors over arrays/parts, blockers, history | ARCH §5.2; SPEC-02 §8; SPEC-01 §6 | WPT-8.1–8.4 (kernel forms); SGT-6.2; SFT-4.3 (kernel form) | T-313, T-206 | review (Supervisor, deferred to V1 gate) — tests: `lattice-tx` kernel_read_path |
-| T-315 | **Secondary indices + record cursor**: IndexDef views (by_state, attr_presence, set_presence) — rebuildable from the journal; index-backed cursor selectors replace T-314's scans; the `shared_key` record cursor (vectors sharing a node key fetched as records — `docs/MODEL.md` §5; parameters SQ-13) | SPEC-01 §6, §12; ARCH §5.2; SPEC-02 §8 | SGT-12.1, SGT-12.2, SGT-6.1 (record form) | T-314, SQ-13 | pending |
+| T-315 | **Secondary indices + key-aligned cursor**: IndexDef views (by_state, attr_presence, set_presence) — rebuildable from the journal; index-backed cursor selectors replace T-314's scans; the `shared_key` key-aligned cursor (vectors sharing a node key fetched as records — `docs/MODEL.md` §5; parameters SQ-13) | SPEC-01 §6, §12; ARCH §5.2; SPEC-02 §8 | SGT-12.1, SGT-12.2, SGT-6.1 (record form) | T-314, SQ-13 | pending |
 | T-316 | **Full CLI** (`latticedb-cli`, library mode): admin ops + the SPEC-02 §7–§10 command registry + schema plan/apply + bundles | ARCH §2, §13; SPEC-02 §7–§10; SPEC-01 §16–§17; SPEC-03 §7 | CLI-driven end-to-end on the real binary: SGT-17.1–17.3; SGT-16.3; WPT-7.1, WPT-7.3, WPT-7.4; WPT-8.2; restart/replay identity | T-313, T-314, T-315 | pending |
 | T-317 | **Kernel semantics completion I — attributes & key axis**: enum/record lifecycle, sparse axis, monotone guard, predicate whitelist, tightening, replay across epochs | SPEC-01 §1, §3–§7, §13, §16 | SGT-4.1–4.3, 5.2, 5.4, 6.1, 6.3, 6.4, 7.1, 7.3, 13.1, 16.4, 16.5 | T-313, T-314 | pending |
 | T-318 | **Kernel semantics completion II — authorization, aggregation, graph edges**: R11 scope checks + grants, children_state aggregation, cross-graph dependency edges | SPEC-01 §13–§15; SPEC-02 §7 | SGT-13.4, 14.1–14.3, 15.1, 15.2; WPT-7.5 | T-317 | pending |
@@ -206,7 +206,7 @@ lock-free (ED-26); no `order` parameter and single-column cursors (ED-27); parts
 into a cache, not mmap'd, and a cursor is not a snapshot across fetches (ED-28);
 `CURSOR_EXPIRED` has no registered code — mapped to `NOT_FOUND` + hint (SQ-11); cursor
 selectors scan the column — index-backed selection is T-315; the `shared_key` cursor
-(the record cursor, `docs/MODEL.md` §5) waits for SQ-13's parameters; the engine holds
+(the key-aligned cursor, `docs/MODEL.md` §5) waits for SQ-13's parameters; the engine holds
 every cell in memory (SQ-12).
 
 ## Model errata (2026-11-28, after the owner's review)
@@ -219,10 +219,28 @@ their names:
   one key axis per node (SPEC-01 §6, §18.1). Fixed in T-313's code; fixture gained a
   second table set; test `one_key_axis_per_node_spans_every_table_set` (ED-29).
 - **`shared_key` was implemented as "nodes whose scalar attribute equals a value".** It
-  is the record cursor over the vectors that share a node key. The wrong selector is
+  is the key-aligned cursor over the vectors that share a node key. The wrong selector is
   removed from the kernel; the right cursor is T-315 work and waits for SQ-13's
   parameters (ED-30).
 
 Open points the re-read surfaced: SQ-14 (first `k` of a vector axis), SQ-15 (point
 append at `k == current_max`), SQ-16 (unit of the global epoch marker).
+
+## Gap audit (2026-11-28, owner-mandated: every gap from M1 to M5)
+
+The owner asked for every gap that could stop work for a decision, so that they are
+closed up front. Result: **39 open decisions**, listed as a queue at the top of BACKLOG's
+"Spec questions" section (SQ-01…SQ-43), each ordered by the milestone it blocks and each
+with a recommendation. Two of them are defects to fix regardless of the decision:
+
+- **SQ-23** — the journal frame cap is enforced only on recovery; a record over the cap
+  is written and then unreadable.
+- **SQ-24** — `DropGraph` ignores live nodes.
+- **SQ-17** — a record field's position is taken from its key's trailing digits.
+
+Also corrected in the same pass: `docs/MODEL.md` no longer describes a node as a table —
+the relational words are an analogy for `k` only; a scalar is one value stored, internally,
+as the k = 0 cell of its attribute.
+
+Work continues on what is already decided while the queue is worked through.
 
