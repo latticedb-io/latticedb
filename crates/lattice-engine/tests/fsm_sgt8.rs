@@ -93,7 +93,7 @@ fn sgt_8_5_runtime_ranks_mirror_compiler() {
 /// increase; equal-rank and backward pairs both rejected. No retraction
 /// machinery exists: the registry offers no way to force a state.
 #[test]
-fn sft_8_4_runtime_backward_prohibition() {
+fn sgt_8_4_runtime_backward_prohibition() {
     let reg = diamond_registry();
     // b→c: rank 1 → 1 (equal, no declared transition either — Undeclared
     // wins because the pair is not declared; add it via a second registry

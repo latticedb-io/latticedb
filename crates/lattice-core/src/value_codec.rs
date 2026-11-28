@@ -33,15 +33,6 @@ impl std::fmt::Display for ValueError {
 
 impl std::error::Error for ValueError {}
 
-/// LE array from a statically verified slice (`arr` guarantees the length;
-/// `copy_from_slice` panics loudly on any mismatch — an explicit invariant,
-/// never a silent default).
-fn le<const N: usize>(src: &[u8]) -> [u8; N] {
-    let mut out = [0u8; N];
-    out.copy_from_slice(src);
-    out
-}
-
 /// Encode one value.
 pub fn encode_value(v: &Value, out: &mut Vec<u8>) {
     match v {
@@ -107,97 +98,65 @@ pub fn encode_value(v: &Value, out: &mut Vec<u8>) {
 }
 
 /// Decode one value from the front of `data`; returns the value and the
-/// number of bytes consumed.
+/// number of bytes consumed (callers with more data after the value advance
+/// by it).
 pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
+    /// Read `n` little-endian bytes at `pos` as a fixed array, advancing.
+    fn take<const N: usize>(data: &[u8], pos: &mut usize) -> Result<[u8; N], ValueError> {
+        let end = *pos + N;
+        if end > data.len() {
+            return Err(ValueError::Truncated);
+        }
+        let mut out = [0u8; N];
+        out.copy_from_slice(&data[*pos..end]);
+        *pos = end;
+        Ok(out)
+    }
+    /// Read a `u32`-length byte blob at `pos`, advancing.
+    fn blob<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], ValueError> {
+        let len = u32::from_le_bytes(take::<4>(data, pos)?) as usize;
+        let end = *pos + len;
+        if end > data.len() {
+            return Err(ValueError::Truncated);
+        }
+        let out = &data[*pos..end];
+        *pos = end;
+        Ok(out)
+    }
     if data.is_empty() {
         return Err(ValueError::Truncated);
     }
-    let tag = data[0];
     let mut pos = 1usize;
-    fn need(data: &[u8], pos: usize, n: usize) -> Result<(), ValueError> {
-        if pos + n > data.len() {
-            Err(ValueError::Truncated)
-        } else {
-            Ok(())
-        }
-    }
-    fn arr(data: &[u8], pos: &mut usize, n: usize) -> Result<[u8; 16], ValueError> {
-        need(data, *pos, n)?;
-        let mut out = [0u8; 16];
-        out[..n].copy_from_slice(&data[*pos..*pos + n]);
-        *pos += n;
-        Ok(out)
-    }
-    Ok(match tag {
+    let value = match data[0] {
         1 => {
-            need(data, pos, 1)?;
-            pos += 1;
-            (Value::Bool(data[pos - 1] != 0), pos)
+            let b = take::<1>(data, &mut pos)?[0];
+            Value::Bool(b != 0)
         }
-        2 => {
-            let a = arr(data, &mut pos, 8)?;
-            (Value::I64(i64::from_le_bytes(le(&a[8..]))), pos)
-        }
-        3 => {
-            let a = arr(data, &mut pos, 8)?;
-            (
-                Value::F64(f64::from_bits(u64::from_le_bytes(le(&a[8..])))),
-                pos,
-            )
-        }
+        2 => Value::I64(i64::from_le_bytes(take::<8>(data, &mut pos)?)),
+        3 => Value::F64(f64::from_bits(u64::from_le_bytes(take::<8>(
+            data, &mut pos,
+        )?))),
         4 => {
-            let a = arr(data, &mut pos, 16)?;
-            let unscaled = i128::from_le_bytes(a);
-            pos += 16;
-            need(data, pos, 2)?;
-            let precision = data[pos];
-            let scale = data[pos + 1];
-            pos += 2;
-            let d = Decimal::new(unscaled, precision, scale)
+            let unscaled = i128::from_le_bytes(take::<16>(data, &mut pos)?);
+            let tail = take::<2>(data, &mut pos)?;
+            let d = Decimal::new(unscaled, tail[0], tail[1])
                 .map_err(|e| ValueError::InvalidDecimal(e.to_string()))?;
-            (Value::Decimal(d), pos)
+            Value::Decimal(d)
         }
         5 => {
-            need(data, pos, 4)?;
-            let len = u32::from_le_bytes(le(&data[pos..pos + 4])) as usize;
-            pos += 4;
-            need(data, pos, len)?;
-            let s = String::from_utf8(data[pos..pos + len].to_vec())
-                .map_err(|_| ValueError::InvalidUtf8)?;
-            pos += len;
-            (Value::Str(s.into_boxed_str()), pos)
+            let s =
+                std::str::from_utf8(blob(data, &mut pos)?).map_err(|_| ValueError::InvalidUtf8)?;
+            Value::Str(s.to_string().into_boxed_str())
         }
-        6 => {
-            need(data, pos, 4)?;
-            let len = u32::from_le_bytes(le(&data[pos..pos + 4])) as usize;
-            pos += 4;
-            need(data, pos, len)?;
-            let b = data[pos..pos + len].to_vec();
-            pos += len;
-            (Value::Bytes(b.into_boxed_slice()), pos)
-        }
-        7 => {
-            let a = arr(data, &mut pos, 8)?;
-            (Value::Timestamp(i64::from_le_bytes(le(&a[8..]))), pos)
-        }
-        8 => {
-            let a = arr(data, &mut pos, 8)?;
-            (Value::Duration(i64::from_le_bytes(le(&a[8..]))), pos)
-        }
-        9 => {
-            let a = arr(data, &mut pos, 4)?;
-            (Value::NodeRef(NodeId(u32::from_le_bytes(le(&a[4..])))), pos)
-        }
-        10 => {
-            need(data, pos, 1)?;
-            pos += 1;
-            (Value::Enum(data[pos - 1]), pos)
-        }
+        6 => Value::Bytes(blob(data, &mut pos)?.to_vec().into_boxed_slice()),
+        7 => Value::Timestamp(i64::from_le_bytes(take::<8>(data, &mut pos)?)),
+        8 => Value::Duration(i64::from_le_bytes(take::<8>(data, &mut pos)?)),
+        9 => Value::NodeRef(NodeId(u32::from_le_bytes(take::<4>(data, &mut pos)?))),
+        10 => Value::Enum(take::<1>(data, &mut pos)?[0]),
         11 => {
-            need(data, pos, 12)?;
-            let presence = u64::from_le_bytes(le(&data[pos..pos + 8]));
-            let count = u32::from_le_bytes(le(&data[pos + 8..pos + 12])) as usize;
-            pos += 12;
+            let head = take::<12>(data, &mut pos)?;
+            let presence = u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
+            let count = u32::from_le_bytes(head[8..].try_into().expect("4 bytes")) as usize;
             let mut rv = RecordValue::default();
             for i in 0..count {
                 let (v, used) = decode_value(&data[pos..])?;
@@ -207,8 +166,92 @@ pub fn decode_value(data: &[u8]) -> Result<(Value, usize), ValueError> {
                         .map_err(|e| ValueError::InvalidDecimal(e.to_string()))?;
                 }
             }
-            (Value::Record(rv), pos)
+            Value::Record(rv)
         }
         other => return Err(ValueError::UnknownTag(other)),
-    })
+    };
+    Ok((value, pos))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round_trip(v: Value) {
+        let mut buf = Vec::new();
+        encode_value(&v, &mut buf);
+        let (back, used) = decode_value(&buf).expect("decodes");
+        assert_eq!(used, buf.len(), "one value consumes exactly its bytes");
+        assert_eq!(back, v, "decode(encode(x)) == x");
+    }
+
+    /// Every fixed-width tag round-trips with its REAL value — the reader
+    /// used to decode I64/F64/Timestamp/Duration as 0 (it read the padding of
+    /// its scratch buffer), panic on NodeRef and skip 16 bytes past Decimal.
+    #[test]
+    fn fixed_width_tags_round_trip_with_their_values() {
+        round_trip(Value::I64(-123_456_789_012));
+        round_trip(Value::F64(3.25));
+        round_trip(Value::F64(-0.0));
+        round_trip(Value::Timestamp(1_700_000_000_000_123));
+        round_trip(Value::Duration(-42));
+        round_trip(Value::NodeRef(NodeId(0xDEAD_BEEF)));
+        round_trip(Value::Bool(true));
+        round_trip(Value::Enum(200));
+    }
+
+    #[test]
+    fn variable_width_tags_round_trip() {
+        round_trip(Value::str("hello").unwrap());
+        round_trip(Value::bytes(vec![1u8, 2, 3]).unwrap());
+        round_trip(Value::Decimal(Decimal::new(-305, 10, 2).expect("decimal")));
+    }
+
+    /// A value followed by more data: `used` lands exactly on the next byte.
+    #[test]
+    fn used_points_at_the_next_value_in_a_sequence() {
+        let values = [
+            Value::I64(7),
+            Value::Decimal(Decimal::new(305, 10, 2).unwrap()),
+            Value::NodeRef(NodeId(77)),
+            Value::str("next").unwrap(),
+        ];
+        let mut buf = Vec::new();
+        for v in &values {
+            encode_value(v, &mut buf);
+        }
+        let mut pos = 0usize;
+        for v in &values {
+            let (back, used) = decode_value(&buf[pos..]).expect("decodes");
+            pos += used;
+            assert_eq!(&back, v);
+        }
+        assert_eq!(pos, buf.len());
+    }
+
+    #[test]
+    fn record_with_present_and_absent_fields_round_trips() {
+        let rec = RecordValue::from_pairs(&[
+            (0, Value::I64(1_000)),
+            (2, Value::str("note").unwrap()),
+            (3, Value::Decimal(Decimal::new(42, 8, 2).unwrap())),
+        ])
+        .expect("record");
+        round_trip(Value::Record(rec));
+    }
+
+    #[test]
+    fn truncated_and_unknown_inputs_are_errors() {
+        assert_eq!(decode_value(&[]), Err(ValueError::Truncated));
+        // I64 needs 8 payload bytes.
+        assert_eq!(decode_value(&[2, 0, 0]), Err(ValueError::Truncated));
+        // NodeRef needs 4.
+        assert_eq!(decode_value(&[9, 0, 0, 0]), Err(ValueError::Truncated));
+        // Str length beyond the buffer.
+        assert_eq!(
+            decode_value(&[5, 9, 0, 0, 0, b'a']),
+            Err(ValueError::Truncated)
+        );
+        assert_eq!(decode_value(&[99]), Err(ValueError::UnknownTag(99)));
+    }
 }

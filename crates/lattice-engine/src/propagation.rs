@@ -91,6 +91,7 @@ pub fn invert_read_sets(compiled: &Compiled) -> BTreeMap<u16, Vec<Key>> {
 }
 
 /// The propagation worklist over a [`Machine`].
+#[derive(Clone)]
 pub struct Propagator {
     pub machine: Machine,
     readers: BTreeMap<u16, Vec<Key>>,
@@ -126,6 +127,19 @@ impl Propagator {
     /// Mark a state motion dirty.
     pub fn mark_state(&mut self, node: NodeId) {
         self.queue.push(Dirty::State(node));
+    }
+
+    /// Move onto a new schema epoch: recompile the machine in place and
+    /// rebuild the inverted read-set index (read-sets are per-epoch).
+    pub fn recompile(
+        &mut self,
+        compiled: Compiled,
+        catalog: &lattice_schema::catalog::Catalog,
+        node_type_codes: &BTreeMap<Key, u16>,
+    ) {
+        self.readers = invert_read_sets(&compiled);
+        self.machine
+            .recompile_in_place(compiled, catalog, node_type_codes);
     }
 
     /// Permute the pending queue (confluence test hook — processing order

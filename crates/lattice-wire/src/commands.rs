@@ -38,28 +38,9 @@ pub mod tags {
     pub const PAYLOAD: u16 = 0x0052;
 }
 
-/// Closed error-code registry (SPEC-02 §7, 0x03xx).
-pub mod codes {
-    pub const AUTH_FAILED: u16 = 0x0301;
-    pub const FORBIDDEN: u16 = 0x0302;
-    pub const NOT_FOUND: u16 = 0x0303;
-    pub const ALREADY_EXISTS: u16 = 0x0304;
-    pub const INVALID_KEY: u16 = 0x0305;
-    pub const SCHEMA: u16 = 0x0306;
-    pub const INVALID_KIND_PARAMS: u16 = 0x0307;
-    pub const CYCLE: u16 = 0x0308;
-    pub const MULTI_PARENT: u16 = 0x0309;
-    pub const CONTAINMENT: u16 = 0x030A;
-    pub const HAS_DEPENDENTS: u16 = 0x030B;
-    pub const REQUIREMENTS_UNMET: u16 = 0x030C;
-    pub const TERMINAL: u16 = 0x030D;
-    pub const NOT_APPENDABLE: u16 = 0x030E;
-    pub const NOT_MONOTONE: u16 = 0x030F;
-    pub const R13_IN_USE: u16 = 0x0310;
-    pub const BACKWARD_RANK: u16 = 0x0311;
-    pub const ORDER_CONFLICT: u16 = 0x0312;
-    pub const INTERNAL: u16 = 0x03FF;
-}
+/// Closed error-code registry (SPEC-02 §7, 0x03xx) — ONE registry, owned by
+/// the kernel (`lattice_tx::error::codes`); re-exported, never copied.
+pub use lattice_tx::error::codes;
 
 fn trunc() -> CommandError {
     CommandError {

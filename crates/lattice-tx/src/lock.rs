@@ -50,9 +50,21 @@ impl SubtreeLockTable {
             held.insert(k);
             acquired.push(k);
         }
-        if let Ok(mut stats) = self.stats.lock() {
-            stats.acquisitions += acquired.len() as u64;
-            stats.max_held_keys = stats.max_held_keys.max(held.len() as u64);
+        // A poisoned stats lock is a broken table: hand the keys back
+        // rather than report success with uncounted locks.
+        match self.stats.lock() {
+            Ok(mut stats) => {
+                stats.acquisitions += acquired.len() as u64;
+                stats.max_held_keys = stats.max_held_keys.max(held.len() as u64);
+            }
+            Err(_) => {
+                for k in &acquired {
+                    held.remove(k);
+                }
+                drop(held);
+                self.cv.notify_all();
+                return Err(TxError::LockPoisoned);
+            }
         }
         drop(held);
         Ok(SubtreeGuard {
@@ -61,17 +73,27 @@ impl SubtreeLockTable {
         })
     }
 
-    pub fn stats(&self) -> LockStats {
-        self.stats.lock().map(|s| s.clone()).unwrap_or_default()
+    /// `Err` when the table is poisoned — never a silent zero.
+    pub fn stats(&self) -> Result<LockStats, TxError> {
+        self.stats
+            .lock()
+            .map(|s| s.clone())
+            .map_err(|_| TxError::LockPoisoned)
     }
 
-    pub fn is_held(&self, key: NodeId) -> bool {
-        self.held.lock().map(|h| h.contains(&key)).unwrap_or(false)
+    pub fn is_held(&self, key: NodeId) -> Result<bool, TxError> {
+        self.held
+            .lock()
+            .map(|h| h.contains(&key))
+            .map_err(|_| TxError::LockPoisoned)
     }
 
     /// Currently held key count (exclusion audit).
-    pub fn held_count(&self) -> usize {
-        self.held.lock().map(|h| h.len()).unwrap_or(0)
+    pub fn held_count(&self) -> Result<usize, TxError> {
+        self.held
+            .lock()
+            .map(|h| h.len())
+            .map_err(|_| TxError::LockPoisoned)
     }
 }
 

@@ -1,505 +1,362 @@
-//! T-310 acceptance: concurrent subtree-locked writers + sequencer
-//! (ARCH §8) — confluence under parallel load (any interleave converges
-//! to the journal's own replay), lock exclusion, deadlock-free ordered
-//! acquisition, per-node fact order, dense LSNs, WPT-5.1 parallel
-//! pipelining variant.
+//! T-310 acceptance on the DURABLE kernel (ARCHITECTURE §8 — completed by
+//! T-313): concurrent subtree-locked writers over the single sequencer.
+//!
+//! - Confluence: any interleave of parallel writers converges to the
+//!   journal's own replay (live state == reopened state).
+//! - Per-writer order: a writer holding a node's U-lock across submit→receipt
+//!   keeps ITS commands on that node in order.
+//! - Ordered acquisition is deadlock-free.
+//! - LSNs stay dense and every submitted command is answered (WPT-5.1
+//!   parallel pipelining variant).
 
-use lattice_core::arrays::GraphArrays;
-use lattice_core::ids::{AttrId, KeyIndex, Lsn, NodeId, NodeIdSpace};
+mod common;
+
+use common::*;
+use lattice_core::ids::NodeId;
 use lattice_core::value::Value;
-use lattice_schema::catalog::Catalog;
-use lattice_schema::compile::compile;
-use lattice_schema::entities::*;
-use lattice_schema::key::Key;
-use lattice_schema::txn::{SchemaOp, SchemaState};
-use lattice_tx::gate::MachineGate;
-use lattice_tx::sequencer::{MemoryJournal, Sequencer};
-use lattice_tx::writer::WriterPool;
-use lattice_tx::{Fact, FactPayload, TxError};
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use lattice_engine::dispatch::kinds;
+use lattice_tx::{
+    Command, Kernel, KernelHandle, Reply, Row, Subject, SubtreeLockTable, WriterPool, codes,
+    conflict_domain, shutdown_shared,
+};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Catalog fixture: `amount` (I64, Increasing — R7 gate live), `log`
-/// (append-only — R12 gate live), task node type; 4 task roots (ids 1..4).
-fn fixture() -> (SchemaState, MachineGate) {
-    let mut st = SchemaState::new(Catalog::fresh());
-    let key = |s: &str| Key::parse(s).expect("fixture key");
-    let ops = vec![
-        SchemaOp::CreateAttribute(AttributeDef {
-            key: key("amount"),
-            attr_type: AttrType::Scalar(ScalarType::I64),
-            required: false,
-            default: None,
-            codec_override: None,
-            monotonicity: Monotonicity::Increasing,
-            write_scope: None,
-        }),
-        SchemaOp::CreateAttribute(AttributeDef {
-            key: key("log"),
-            attr_type: AttrType::Scalar(ScalarType::I64),
-            required: false,
-            default: None,
-            codec_override: None,
-            monotonicity: Monotonicity::None,
-            write_scope: None,
-        }),
-        SchemaOp::CreateKeyType(KeyTypeDef {
-            key: key("seq"),
-            density: Density::Dense,
-            axis: AxisKind::Ordinal,
-        }),
-        SchemaOp::CreateStateModel(
-            StateModel::new(
-                key("task_flow"),
-                ModelClass::Finalizing,
-                vec![
-                    State {
-                        key: key("open"),
-                        name: "Open".into(),
-                        success_terminal: false,
-                        failure_terminal: false,
-                    },
-                    State {
-                        key: key("done"),
-                        name: "Done".into(),
-                        success_terminal: true,
-                        failure_terminal: false,
-                    },
-                    State {
-                        key: key("failed"),
-                        name: "Failed".into(),
-                        success_terminal: false,
-                        failure_terminal: true,
-                    },
-                ],
-                key("open"),
-            )
-            .expect("state model"),
-        ),
-        SchemaOp::CreateNodeType(NodeType {
-            key: key("task"),
-            display_name: "Task".into(),
-            parent_type: None,
-            state_model: key("task_flow"),
-            attribute_sets: Vec::new(),
-            key_type: key("seq"),
-            state_locks: Vec::new(),
-        }),
-        // Terminal reachability (Finalizing law): declared motions to the
-        // success/failure terminals.
-        SchemaOp::AddTransition(
-            Transition::new(
-                key("finish"),
-                key("task_flow"),
-                key("open"),
-                key("done"),
-                Vec::new(),
-                vec![ActorClass::Human],
-                None,
-                TransitionTiming::default(),
-                Vec::new(),
-            )
-            .expect("transition"),
-        ),
-        SchemaOp::AddTransition(
-            Transition::new(
-                key("drop"),
-                key("task_flow"),
-                key("open"),
-                key("failed"),
-                Vec::new(),
-                vec![ActorClass::Human],
-                None,
-                TransitionTiming::default(),
-                Vec::new(),
-            )
-            .expect("transition"),
-        ),
-    ];
-    st.commit(ops).expect("fixture txns compile");
-    let gate = gate_from(&st);
-    (st, gate)
-}
-
-/// Gate over a fresh engine with the fixture's 4 nodes (deterministic id
-/// space, so parallel runs and replays address identical nodes).
-fn gate_from(st: &SchemaState) -> MachineGate {
-    let compiled = compile(&st.catalog).expect("fixture compiles");
-    let probe = lattice_engine::dispatch::Machine::new(
-        GraphArrays::new(NodeIdSpace::new()),
-        compiled,
-        &st.catalog,
-    );
-    let t_code = probe
-        .node_type_code(&Key::parse("task").expect("key"))
-        .expect("task code");
-    let mut arrays = GraphArrays::new(NodeIdSpace::new());
-    for _ in 0..4 {
-        arrays.add_root(1u16.into(), t_code).expect("fixture node");
+/// A database with the fixture schema, `projects` projects and `tasks` tasks
+/// spread under them.
+fn database(name: &str, projects: usize, tasks: usize) -> (PathBuf, Kernel, Vec<NodeId>) {
+    let dir = test_dir(name);
+    let mut kernel = Kernel::create(&dir, 1, limits()).expect("create database");
+    kernel
+        .execute(0, &subject(), &Command::SchemaTxn { ops: schema_ops() })
+        .expect("install schema");
+    let created = |kernel: &mut Kernel, cmd: Command| match kernel.execute(0, &subject(), &cmd) {
+        Ok(Reply::Created(id)) => id,
+        Ok(other) => panic!("expected Created, got {other:?}"),
+        Err(err) => panic!("setup command refused: {err}"),
+    };
+    let mut roots = Vec::new();
+    for _ in 0..projects {
+        roots.push(created(
+            &mut kernel,
+            Command::CreateNode {
+                graph: key("pm"),
+                node_type: key("project"),
+                parent: None,
+                attrs: vec![],
+            },
+        ));
     }
-    let compiled = compile(&st.catalog).expect("fixture compiles");
-    let machine = lattice_engine::dispatch::Machine::new(arrays, compiled, &st.catalog);
-    let mut monotone = BTreeMap::new();
-    monotone.insert(Key::parse("amount").expect("key"), Monotonicity::Increasing);
-    let mut append_only = std::collections::BTreeSet::new();
-    append_only.insert(Key::parse("log").expect("key"));
-    MachineGate::new(machine, monotone, append_only)
-}
-
-/// Axis entry: (max_k, latest value) per (node, axis name).
-type AxisEntry = (Option<u64>, Option<Value>);
-/// Axis dump: (node, axis) → (max_k, latest value) — the confluence view.
-fn axis_dump(gate: &MachineGate) -> BTreeMap<(u32, &'static str), AxisEntry> {
-    let amount = Key::parse("amount").expect("key");
-    let log = Key::parse("log").expect("key");
-    let mut out = BTreeMap::new();
-    for node in 0..4u32 {
-        let node = NodeId(node);
-        out.insert(
-            (node.0, "amount"),
-            (
-                gate.machine().max_k(node, &amount),
-                gate.machine()
-                    .latest_cell(node, &amount)
-                    .map(|c| c.value.clone()),
-            ),
-        );
-        out.insert(
-            (node.0, "log"),
-            (
-                gate.machine().max_k(node, &log),
-                gate.machine()
-                    .latest_cell(node, &log)
-                    .map(|c| c.value.clone()),
-            ),
-        );
+    let mut nodes = Vec::new();
+    for i in 0..tasks {
+        nodes.push(created(
+            &mut kernel,
+            Command::CreateNode {
+                graph: key("pm"),
+                node_type: key("task"),
+                parent: Some(roots[i % roots.len()]),
+                attrs: vec![(key("title"), Value::str(format!("task {i}")).unwrap())],
+            },
+        ));
     }
-    out
+    (dir, kernel, nodes)
 }
 
-fn attr_set(txn: u64, node: u32, k: u64, v: i64) -> Fact {
-    Fact {
-        txn_id: txn,
-        domain: vec![NodeId(node)],
-        payload: FactPayload::AttrSet {
-            node: NodeId(node),
-            attr: AttrId(0),
-            k: KeyIndex(k),
-            value: Value::I64(v),
-        },
+/// One one-cell row append to the node's `log` column (k is assigned by the
+/// kernel, so concurrent appends never collide on a key).
+fn row(node: NodeId, value: i64) -> Command {
+    Command::RowAppend {
+        node,
+        set: key("task_table"),
+        rows: vec![Row {
+            k_skip: 0,
+            cells: vec![(key("log"), Value::I64(value))],
+        }],
     }
 }
 
-fn log_append(txn: u64, node: u32, k: u64, v: i64) -> Fact {
-    Fact {
-        txn_id: txn,
-        domain: vec![NodeId(node)],
-        payload: FactPayload::CellsAppend {
-            node: NodeId(node),
-            attr: AttrId(1),
-            k: KeyIndex(k),
-            value: Value::I64(v),
-        },
-    }
+/// The node's `log` values in k order.
+fn log_cells(kernel: &Kernel, node: NodeId) -> Vec<i64> {
+    let machine = kernel.state().machine();
+    let log = machine.compiled_ref().attr_ids[&key("log")];
+    let mut cells: Vec<(u64, i64)> = machine
+        .cells()
+        .filter(|((n, a, _), _)| *n == node && *a == log)
+        .filter_map(|((_, _, k), cell)| match cell.value {
+            Value::I64(v) => Some((k.0, v)),
+            _ => None,
+        })
+        .collect();
+    cells.sort_by_key(|(k, _)| *k);
+    cells.into_iter().map(|(_, v)| v).collect()
 }
 
-/// Deterministic submission schedule (writer w, step i) → fact.
-fn schedule_fact(w: u64, i: u64, txn: u64) -> Fact {
-    let node = ((w + i) % 4) as u32;
-    attr_set(txn, node, 0, (w * 1000 + i) as i64)
+/// Committed txns on disk (the journal's own count; `recover` refuses gaps).
+fn journal_txn_count(dir: &Path) -> usize {
+    let mut count = 0usize;
+    lattice_storage::journal::recover(&dir.join("journal"), |_| count += 1)
+        .expect("journal recovers — LSNs are dense");
+    count
 }
 
-/// THE acceptance (WPT-8-style confluence oracle, ARCH §8 correctness):
-/// 4 writers × 50 facts over 4 shared nodes. Rejections (R7 on
-/// interleaved overwrites) are part of the oracle. The accepted fact set,
-/// replayed into a fresh engine IN LSN ORDER, converges to the same final
-/// state on every replay — and the final per-node values equal the max
-/// accepted value per node (monotone axis semantics).
+/// Confluence: 8 writers, interleaved row appends and title writes across 24
+/// tasks. Whatever the interleave, the live state equals the journal's own
+/// replay, every command is answered, and no append is lost or doubled.
 #[test]
 fn confluence_under_parallel_load_converges_to_journal_replay() {
-    let (st, gate) = fixture();
-    let sequencer = Sequencer::new(gate, MemoryJournal::default());
-    let outcomes = Arc::new(Mutex::new(Vec::new()));
-    let pool = WriterPool::spawn(4, sequencer, 8, Arc::clone(&outcomes)).expect("pool spawn");
-
-    let mut txn = 1u64;
-    for w in 0..4u64 {
-        for i in 0..50u64 {
-            pool.enqueue(schedule_fact(w, i, txn)).expect("enqueue");
-            txn += 1;
-        }
-    }
-    pool.shutdown();
-
-    let outcomes = outcomes.lock().expect("outcomes").clone();
-    assert_eq!(outcomes.len(), 200, "no lost facts");
-    let accepted_txns: std::collections::BTreeSet<u64> = outcomes
-        .iter()
-        .filter_map(|(t, r)| r.is_ok().then_some(*t))
-        .collect();
-    let rejected = outcomes.len() - accepted_txns.len();
-    assert!(!accepted_txns.is_empty(), "some facts accepted");
-    assert!(
-        rejected > 0,
-        "R7 gate fires on interleaved overwrites: {rejected} rejected"
-    );
-
-    // Dense LSNs 1..n (P15 single sequencer, gap-free law).
-    let mut lsns: Vec<u64> = outcomes
-        .iter()
-        .filter_map(|(_, r)| r.as_ref().ok().map(|l| l.0))
-        .collect();
-    lsns.sort_unstable();
-    for (i, lsn) in lsns.iter().enumerate() {
-        assert_eq!(*lsn, (i + 1) as u64, "dense LSNs");
-    }
-
-    // Convergence: replay the accepted facts (LSN order) into TWO fresh
-    // engines — identical final axes. Any interleave converges to the
-    // journal's own replay.
-    let replay_axes = |which: usize| -> BTreeMap<(u32, &'static str), AxisEntry> {
-        let (_, gate) = fixture();
-        let mut seq = Sequencer::new(ReplayGate { inner: gate }, MemoryJournal::default());
-        let mut n = 0u64;
-        for w in 0..4u64 {
-            for i in 0..50u64 {
-                n += 1;
-                if accepted_txns.contains(&n) {
-                    let mut fact = schedule_fact(w, i, n);
-                    seq.ingest(&mut fact).unwrap_or_else(|e| {
-                        panic!("replay {which}: accepted fact {n} re-applies: {e}")
-                    });
-                }
-            }
-        }
-        let probe_gate = seq_gate(&mut seq);
-        axis_dump(probe_gate)
-    };
-    let axes1 = replay_axes(1);
-    let axes2 = replay_axes(2);
-    assert_eq!(axes1, axes2, "replay identity (D1) under parallel load");
-
-    // Monotone semantics: each node's final value == max accepted value
-    // aimed at that node.
-    for node in 0..4u32 {
-        let mut max_aimed: Option<i64> = None;
-        let mut n = 0u64;
-        for w in 0..4u64 {
-            for i in 0..50u64 {
-                n += 1;
-                if accepted_txns.contains(&n) {
-                    let v = (w * 1000 + i) as i64;
-                    if ((w + i) % 4) as u32 == node {
-                        max_aimed = Some(max_aimed.map_or(v, |m: i64| m.max(v)));
-                    }
-                }
-            }
-        }
-        let got = axes1[&(node, "amount")].1.clone();
-        assert_eq!(
-            got,
-            max_aimed.map(Value::I64),
-            "node {node} final == max accepted (R7 semantics)"
-        );
-    }
-    let _ = st;
-}
-
-/// Access the gate behind a sequencer for the axis dump.
-fn seq_gate(seq: &mut Sequencer<ReplayGate, MemoryJournal>) -> &MachineGate {
-    &seq.gate().inner
-}
-
-/// Replay never re-litigates: facts already accepted by the original
-/// sequencer apply cleanly (the journal is the only authority, P7).
-struct ReplayGate {
-    inner: MachineGate,
-}
-
-impl lattice_tx::sequencer::SequencerGate for ReplayGate {
-    fn validate_and_apply(&mut self, fact: &Fact) -> Result<(), TxError> {
-        self.inner.validate_and_apply(fact)
-    }
-}
-
-/// Gate-level unit checks: R7 rejection, R12 rejection, dead node,
-/// dense journaling of accepted facts only.
-#[test]
-fn gate_rules_inline() {
-    let (_, gate) = fixture();
-    let mut seq = Sequencer::new(gate, MemoryJournal::default());
-    // amount (attr 0) is Increasing: 10 then 5 → R7 rejection.
-    let lsn1 = seq.ingest(&mut attr_set(1, 1, 0, 10)).expect("first");
-    assert_eq!(lsn1, Lsn(1));
-    let err = seq.ingest(&mut attr_set(2, 1, 0, 5)).expect_err("R7");
-    assert!(format!("{err}").contains("R7"), "{err}");
-    // log (attr 1) append-only: k=5 then k=3 → R12 rejection.
-    seq.ingest(&mut log_append(3, 1, 5, 1))
-        .expect("first append");
-    let err = seq.ingest(&mut log_append(4, 1, 3, 1)).expect_err("R12");
-    assert!(format!("{err}").contains("R12"), "{err}");
-    // Dead node rejected.
-    let err = seq
-        .ingest(&mut attr_set(5, 99, 0, 1))
-        .expect_err("dead node");
-    assert!(format!("{err}").contains("not alive"), "{err}");
-    // Only accepted facts journaled; LSNs dense.
-    assert_eq!(seq.journal_len(), 2);
-    assert_eq!(seq.next_lsn(), 3);
-}
-
-/// Lock exclusion + serialization: 8 writers hammering ONE node — no
-/// lost facts, every receipt resolves, accepted set is R7-consistent.
-#[test]
-fn single_node_contention_serializes() {
-    let (_, gate) = fixture();
-    let sequencer = Sequencer::new(gate, MemoryJournal::default());
-    let outcomes = Arc::new(Mutex::new(Vec::new()));
-    let pool = WriterPool::spawn(8, sequencer, 4, Arc::clone(&outcomes)).expect("pool spawn");
-
-    let mut txn = 0u64;
-    for w in 0..8u64 {
-        for i in 0..20u64 {
-            txn += 1;
-            pool.enqueue(attr_set(txn, 0, 0, (w * 100 + i) as i64))
+    const ROUNDS: usize = 8;
+    let (dir, kernel, tasks) = database("confluence", 3, 24);
+    let setup_txns = journal_txn_count(&dir);
+    let handle = Arc::new(KernelHandle::spawn(kernel, 64).expect("sequencer"));
+    let pool = WriterPool::spawn(Arc::clone(&handle), 8, 32).expect("pool");
+    let mut submitted = 0u64;
+    for round in 0..ROUNDS {
+        for (i, task) in tasks.iter().enumerate() {
+            pool.enqueue(submitted, row(*task, i as i64))
                 .expect("enqueue");
+            submitted += 1;
+            pool.enqueue(
+                submitted,
+                Command::AttrSet {
+                    node: *task,
+                    attr: key("title"),
+                    value: Value::str(format!("round {round}")).unwrap(),
+                },
+            )
+            .expect("enqueue");
+            submitted += 1;
         }
     }
-    pool.shutdown();
+    let outcomes = pool.shutdown().expect("writers join");
+    assert_eq!(outcomes.len() as u64, submitted, "every command answered");
+    assert!(
+        outcomes.iter().all(|(_, r)| r.is_ok()),
+        "no refusals under parallel load"
+    );
+    let kernel = shutdown_shared(handle).expect("sequencer joins");
 
-    let outcomes = outcomes.lock().expect("outcomes").clone();
-    assert_eq!(outcomes.len(), 160, "no lost facts");
-    let accepted: Vec<i64> = outcomes
-        .iter()
-        .filter_map(|(_, r)| {
-            // reconstruct the value from the txn schedule
-            r.is_ok().then_some(())
-        })
-        .count()
-        .checked_add(0)
-        .map(|_| Vec::new())
-        .unwrap_or_default();
-    let _ = accepted;
-    for (_, r) in &outcomes {
+    for task in &tasks {
+        assert_eq!(
+            log_cells(&kernel, *task).len(),
+            ROUNDS,
+            "each append landed exactly once"
+        );
+        // The title is whichever whole round write the sequencer ordered
+        // last — one of the rounds, never a torn or mixed value.
+        let title = match &kernel
+            .state()
+            .machine()
+            .latest_cell(*task, &key("title"))
+            .expect("title")
+            .value
+        {
+            Value::Str(s) => s.to_string(),
+            other => panic!("unexpected title value {other:?}"),
+        };
         assert!(
-            r.is_ok() || matches!(r, Err(TxError::Validation { .. })),
-            "receipt resolves: {r:?}"
+            (0..ROUNDS).any(|r| title == format!("round {r}")),
+            "a whole round title: {title}"
         );
     }
+    // Dense LSNs: one txn of three frames per command after the setup.
+    let txns = journal_txn_count(&dir);
+    assert_eq!(txns, setup_txns + submitted as usize);
+    let last = kernel.last_lsn();
+    let live = digest(kernel.state());
+    kernel.close().expect("close");
+
+    let (reopened, report) = Kernel::open(&dir, limits()).expect("reopen");
+    assert_eq!(report.txns_replayed, txns);
+    assert_eq!(report.last_lsn, last);
+    assert_eq!(
+        digest(reopened.state()),
+        live,
+        "any interleave converges to the journal's own replay"
+    );
 }
 
-/// WPT-5.1 parallel variant: two pipelining submitters interleave attr
-/// sets and appends; every fact resolves exactly once; LSNs dense.
+/// WPT-5.1 parallel variant: 1000 pipelined writes through the pool; every
+/// request is answered and the final state is exactly a serial replay.
 #[test]
 fn wpt_5_1_parallel_pipelining_variant() {
-    let (_, gate) = fixture();
-    let sequencer = Sequencer::new(gate, MemoryJournal::default());
-    let outcomes = Arc::new(Mutex::new(Vec::new()));
-    let pool =
-        Arc::new(WriterPool::spawn(2, sequencer, 16, Arc::clone(&outcomes)).expect("pool spawn"));
-
-    let mut joins = Vec::new();
-    for session in 0..2u64 {
-        let pool = Arc::clone(&pool);
-        let join = std::thread::spawn(move || {
-            for i in 0..40u64 {
-                let txn = session * 100 + i;
-                pool.enqueue(attr_set(
-                    txn,
-                    1 + (i % 4) as u32,
-                    0,
-                    (session * 500 + i) as i64,
-                ))
-                .expect("enqueue");
-                pool.enqueue(log_append(
-                    txn + 1000,
-                    1 + (i % 4) as u32,
-                    i,
-                    session as i64,
-                ))
-                .expect("enqueue");
+    let (dir, kernel, tasks) = database("wpt_5_1", 2, 20);
+    let setup_txns = journal_txn_count(&dir);
+    let handle = Arc::new(KernelHandle::spawn(kernel, 256).expect("sequencer"));
+    let pool = WriterPool::spawn(Arc::clone(&handle), 4, 128).expect("pool");
+    let mut rows = 0usize;
+    for i in 0..1000u64 {
+        let task = tasks[(i as usize) % tasks.len()];
+        let cmd = if i % 5 == 4 {
+            // Titles carry no order constraint, so any interleave is legal.
+            Command::AttrSet {
+                node: task,
+                attr: key("title"),
+                value: Value::str(format!("t{i}")).unwrap(),
             }
-        });
-        joins.push(join);
+        } else {
+            rows += 1;
+            row(task, i as i64)
+        };
+        pool.enqueue(i, cmd).expect("enqueue");
+    }
+    let outcomes = pool.shutdown().expect("writers join");
+    assert_eq!(outcomes.len(), 1000, "all request ids answered");
+    assert!(outcomes.iter().all(|(_, r)| r.is_ok()), "no refusals");
+    let kernel = shutdown_shared(handle).expect("sequencer joins");
+    let landed: usize = tasks.iter().map(|t| log_cells(&kernel, *t).len()).sum();
+    assert_eq!(landed, rows, "exactly the row appends landed");
+    assert_eq!(
+        journal_txn_count(&dir),
+        setup_txns + 1000,
+        "one txn per command"
+    );
+    let live = digest(kernel.state());
+    kernel.close().expect("close");
+    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    assert_eq!(
+        digest(reopened.state()),
+        live,
+        "final state equals serial replay"
+    );
+}
+
+/// Per-writer order: four writers append to ONE node. Each takes the node's
+/// U-lock across submit → receipt, so its own values land in its own order;
+/// the axis holds every cell exactly once.
+#[test]
+fn single_node_contention_preserves_each_writers_order() {
+    const WRITERS: i64 = 4;
+    const PER_WRITER: i64 = 150;
+    let (dir, kernel, tasks) = database("contention", 1, 1);
+    let task = tasks[0];
+    assert_eq!(
+        conflict_domain(&row(task, 0)),
+        vec![task],
+        "the conflict domain is the target node"
+    );
+    let handle = Arc::new(KernelHandle::spawn(kernel, 8).expect("sequencer"));
+    let locks = Arc::new(SubtreeLockTable::new());
+    let mut joins = Vec::new();
+    for w in 0..WRITERS {
+        let handle = Arc::clone(&handle);
+        let locks = Arc::clone(&locks);
+        joins.push(std::thread::spawn(move || {
+            for seq in 0..PER_WRITER {
+                let _guard = locks.acquire(vec![task]).expect("lock");
+                let rx = handle
+                    .submit(move |kernel| {
+                        kernel.execute(0, &Subject::trusted("writer"), &row(task, w * 1000 + seq))
+                    })
+                    .expect("submit");
+                rx.recv().expect("receipt").expect("append accepted");
+            }
+        }));
     }
     for j in joins {
-        j.join().expect("session thread");
+        j.join().expect("writer thread");
     }
-    match Arc::try_unwrap(pool) {
-        Ok(pool) => pool.shutdown(),
-        Err(_) => panic!("pool Arc has live clones after joins"),
-    }
-
-    let outcomes = outcomes.lock().expect("outcomes").clone();
-    assert_eq!(outcomes.len(), 160, "every fact resolved exactly once");
-    let mut lsns: Vec<u64> = outcomes
-        .iter()
-        .filter_map(|(_, r)| r.as_ref().ok().map(|l| l.0))
-        .collect();
-    lsns.sort_unstable();
-    for (i, lsn) in lsns.iter().enumerate() {
-        assert_eq!(*lsn, (i + 1) as u64, "dense LSNs under parallel load");
-    }
-    // Cross-session interleaves produce R7 (attr) and R12 (append) /
-    // duplicate-k rejections — accepted is a strict subset.
-    assert!(lsns.len() >= 40, "accepted: {}", lsns.len());
-}
-
-/// Deadlock-free ordered acquisition: opposite-order multi-key domains
-/// concurrently — the pool completes (the test itself hangs on deadlock).
-#[test]
-fn ordered_acquisition_deadlock_free() {
-    let (_, gate) = fixture();
-    let sequencer = Sequencer::new(gate, MemoryJournal::default());
-    let outcomes = Arc::new(Mutex::new(Vec::new()));
-    let pool = WriterPool::spawn(4, sequencer, 8, Arc::clone(&outcomes)).expect("pool spawn");
-
-    for (txn, i) in (0..100u64).enumerate() {
-        let txn = txn as u64 + 1;
-        // Domains [1,3] and [3,1] — normalized to [1,3] internally.
-        let domain = if i % 2 == 0 {
-            vec![NodeId(0), NodeId(2)]
-        } else {
-            vec![NodeId(2), NodeId(0)]
-        };
-        let fact = Fact {
-            txn_id: txn,
-            domain,
-            payload: FactPayload::AttrSet {
-                node: NodeId(0),
-                attr: AttrId(0),
-                k: KeyIndex(0),
-                value: Value::I64(i as i64), // always increasing → accepted
-            },
-        };
-        pool.enqueue(fact).expect("enqueue");
-    }
-    pool.shutdown();
-
-    let outcomes = outcomes.lock().expect("outcomes").clone();
-    assert_eq!(outcomes.len(), 100, "all multi-key facts resolved");
-    // Arrival order is arbitrary → interleaved overwrites can violate R7;
-    // every fact must RESOLVE (Ok or a precise Validation error), none hang.
-    assert!(
-        outcomes
-            .iter()
-            .all(|(_, r)| r.is_ok() || matches!(r, Err(TxError::Validation { .. }))),
-        "all resolved"
+    assert_eq!(
+        locks.held_count().expect("lock table healthy"),
+        0,
+        "every lock released"
     );
-    assert!(outcomes.iter().any(|(_, r)| r.is_ok()), "some accepted");
+    let kernel = shutdown_shared(handle).expect("sequencer joins");
+    let cells = log_cells(&kernel, task);
+    assert_eq!(
+        cells.len(),
+        (WRITERS * PER_WRITER) as usize,
+        "no append lost or doubled"
+    );
+    for w in 0..WRITERS {
+        let mine: Vec<i64> = cells
+            .iter()
+            .copied()
+            .filter(|v| (w * 1000..w * 1000 + PER_WRITER).contains(v))
+            .map(|v| v - w * 1000)
+            .collect();
+        assert_eq!(
+            mine,
+            (0..PER_WRITER).collect::<Vec<_>>(),
+            "writer {w}'s appends kept their order on the node"
+        );
+    }
+    kernel.close().expect("close");
+    let (reopened, _) = Kernel::open(&dir, limits()).expect("reopen");
+    assert_eq!(log_cells(&reopened, task), cells);
 }
 
-/// Inline determinism: sequencer alone (no pool) assigns dense LSNs and
-/// journals exactly the accepted facts.
+/// Deadlock freedom: concurrent linkers take two-node domains in both
+/// orders. Every command completes (accepted or refused), none hangs.
 #[test]
-fn inline_sequencer_dense_and_exact() {
-    let (_, gate) = fixture();
-    let mut seq = Sequencer::new(gate, MemoryJournal::default());
-    for i in 0..10u64 {
-        let mut fact = attr_set(i + 1, (i % 4) as u32, 0, i as i64);
-        let lsn = seq.ingest(&mut fact).expect("inline ingest");
-        assert_eq!(lsn, Lsn(i + 1));
+fn ordered_acquisition_is_deadlock_free() {
+    let (dir, kernel, tasks) = database("deadlock", 2, 6);
+    let handle = Arc::new(KernelHandle::spawn(kernel, 8).expect("sequencer"));
+    let locks = Arc::new(SubtreeLockTable::new());
+    let answered = Arc::new(AtomicU64::new(0));
+    let mut joins = Vec::new();
+    for t in 0..8u64 {
+        let handle = Arc::clone(&handle);
+        let locks = Arc::clone(&locks);
+        let answered = Arc::clone(&answered);
+        let tasks = tasks.clone();
+        joins.push(std::thread::spawn(move || {
+            for i in 0..60u64 {
+                let a = tasks[((t * 7 + i * 5) % tasks.len() as u64) as usize];
+                let b = tasks[((t * 11 + i * 3 + 1) % tasks.len() as u64) as usize];
+                let cmd = Command::Link {
+                    src: a,
+                    dst: b,
+                    kind: kinds::AND,
+                    aux: 0,
+                    guard: None,
+                };
+                let _guard = locks.acquire(conflict_domain(&cmd)).expect("lock");
+                let rx = handle
+                    .submit(move |kernel| kernel.execute(0, &Subject::trusted("linker"), &cmd))
+                    .expect("submit");
+                if let Err(err) = rx.recv().expect("receipt") {
+                    // Self-loops and cycles are the only refusals here.
+                    assert!(
+                        err.code == codes::CYCLE || err.code == codes::INVALID_KIND_PARAMS,
+                        "{err}"
+                    );
+                }
+                answered.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
     }
-    assert_eq!(seq.journal_len(), 10);
-    assert_eq!(seq.next_lsn(), 11);
+    for j in joins {
+        j.join().expect("linker thread");
+    }
+    assert_eq!(
+        answered.load(Ordering::Relaxed),
+        8 * 60,
+        "every linker completed"
+    );
+    assert_eq!(locks.held_count().expect("lock table healthy"), 0);
+    shutdown_shared(handle)
+        .expect("join")
+        .close()
+        .expect("close");
+    let _ = dir;
+}
+
+/// The inline (single-threaded) sequencer: each command is exactly one txn
+/// of three frames, and the LSN sequence stays dense.
+#[test]
+fn inline_sequencer_is_dense_and_exact() {
+    let (dir, mut kernel, tasks) = database("inline", 1, 2);
+    let lsn0 = kernel.last_lsn();
+    for (i, task) in tasks.iter().enumerate() {
+        kernel
+            .execute(0, &subject(), &row(*task, i as i64))
+            .expect("append");
+        assert_eq!(kernel.last_lsn(), lsn0 + 3 * (i as u64 + 1));
+    }
+    kernel.close().expect("close");
+    let (reopened, report) = Kernel::open(&dir, limits()).expect("reopen");
+    assert_eq!(report.last_lsn, lsn0 + 6);
+    assert_eq!(log_cells(&reopened, tasks[0]), vec![0]);
+    assert_eq!(log_cells(&reopened, tasks[1]), vec![1]);
 }

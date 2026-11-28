@@ -1,102 +1,41 @@
-//! LatticeDB transactions: subtree U-locks, staging, the single sequencer
-//! (journal LSN — P15), write-path orchestration (ARCHITECTURE §5.1, §8).
+//! LatticeDB transactions: the kernel (ARCHITECTURE §5.1, §5.3, §8) — the
+//! write path over the durable journal, recovery, explicit transactions, the
+//! sequencer thread and the subtree U-locks.
 //!
-//! Concurrency law (ARCH §8): N worker threads take U-locks per subtree
-//! (conflict domain = target node + parent for Δstructure); the SEQUENCER
-//! is a single thread assigning LSNs and appending the journal (P15);
-//! validation runs node-locally at sequencing time against the engine.
-//! Correctness: node-local validation + confluent derivations ⇒ any
-//! interleave converges to the journal's own replay — the confluence
-//! oracle tests exactly that.
+//! - [`state::EngineState`] — the authoritative in-memory state and the ONE
+//!   mutation primitive (`apply`) that live execution and journal replay share.
+//! - [`records`] — the durable form of every fact (SPEC-03 §6 payloads).
+//! - [`command`] — the typed write commands every surface builds (SPEC-02 §7).
+//! - [`kernel::Kernel`] — lifecycle (create / open / checkpoint / close), the
+//!   write path, explicit txns, the watch emission point.
+//! - [`handle`] — the kernel on its sequencer thread; the writer pool.
+//! - [`lock`] — subtree U-locks (conflict domain = target node + parent).
+//!
+//! Kernel crates are async-free and blocking (SPEC-02 §12.8): sessions hand
+//! commands to the sequencer through the bounded queue.
 
-pub mod gate;
+pub mod command;
+pub mod error;
+pub mod handle;
+pub mod kernel;
 pub mod lock;
-pub mod sequencer;
-pub mod writer;
+pub mod records;
+pub mod state;
 
-use lattice_core::ids::{KeyIndex, Lsn, NodeId};
-use lattice_core::value::Value;
-use std::fmt;
-
-/// One sequenced write fact. The conflict domain names the lock keys:
-/// target node (+ parent when the fact mutates structure).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Fact {
-    pub txn_id: u64,
-    /// Conflict domain: [target] or [target, parent]. Acquired ascending.
-    pub domain: Vec<NodeId>,
-    pub payload: FactPayload,
-}
-
-/// Closed fact set for the write path (v1).
-#[derive(Debug, Clone, PartialEq)]
-pub enum FactPayload {
-    /// R7 monotone overwrite or append onto scalar/record cells.
-    AttrSet {
-        node: NodeId,
-        attr: lattice_core::ids::AttrId,
-        k: KeyIndex,
-        value: Value,
-    },
-    /// R12 append-only axis write.
-    CellsAppend {
-        node: NodeId,
-        attr: lattice_core::ids::AttrId,
-        k: KeyIndex,
-        value: Value,
-    },
-    /// Structure: create node under parent (parent in domain).
-    CreateNode {
-        parent: Option<NodeId>,
-        type_code: u16,
-    },
-    /// Structure: delete node (cascade resolved by the engine gate).
-    DeleteNode { node: NodeId, cascade: bool },
-}
-
-/// Error type for the tx layer (ARCH §5.1 write path).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TxError {
-    /// Engine gate rejected the fact (R-rules, containment, …).
-    Validation { rule: String },
-    /// Journal append failed (io / corruption / gap).
-    Journal { reason: String },
-    /// Queue closed — pool shutting down.
-    Closed,
-    /// Lock table poisoned / inconsistent — refuse rather than deadlock.
-    LockPoisoned,
-    /// OS thread spawn failed (name/OOM) — refuse, no partial pool.
-    ThreadSpawn { reason: String },
-}
-
-impl fmt::Display for TxError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Validation { rule } => write!(f, "validation failed: {rule}"),
-            Self::Journal { reason } => write!(f, "journal: {reason}"),
-            Self::Closed => write!(f, "sequencer closed"),
-            Self::LockPoisoned => write!(f, "lock table poisoned"),
-            Self::ThreadSpawn { reason } => write!(f, "thread spawn: {reason}"),
-        }
-    }
-}
-
-impl std::error::Error for TxError {}
-
-impl From<lattice_storage::journal::JournalError> for TxError {
-    fn from(e: lattice_storage::journal::JournalError) -> Self {
-        Self::Journal {
-            reason: e.to_string(),
-        }
-    }
-}
-
-/// Result LSN receipt for a submitted fact.
-pub type SequenceReceipt = Result<Lsn, TxError>;
+pub use command::{Command, Reply};
+pub use error::{KernelError, TxError, codes};
+pub use handle::{KernelHandle, WriterPool, conflict_domain, shutdown_shared};
+pub use kernel::{CheckpointReport, Kernel, KernelLimits, OpenReport, WatchEvent};
+pub use lattice_storage::journal::TxnLsns;
+pub use lock::SubtreeLockTable;
+pub use records::{Record, RecordData, RecordError, Row};
+pub use state::{EngineState, Event, EventKind, Planned, Subject};
 
 /// Sort a conflict domain ascending — the ordered-acquisition discipline
-/// that makes concurrent multi-key locking deadlock-free.
-pub fn ordered_domain(mut domain: Vec<NodeId>) -> Vec<NodeId> {
+/// that makes concurrent multi-key locking deadlock-free (ARCHITECTURE §8).
+pub fn ordered_domain(
+    mut domain: Vec<lattice_core::ids::NodeId>,
+) -> Vec<lattice_core::ids::NodeId> {
     domain.sort_unstable();
     domain.dedup();
     domain

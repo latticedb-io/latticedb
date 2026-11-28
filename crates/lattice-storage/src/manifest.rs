@@ -311,6 +311,39 @@ fn mtime_age_secs(path: &Path) -> Result<u64, ManifestError> {
     Ok(age.as_secs())
 }
 
+const SNAPSHOT_PREFIX: &str = "snapshot.v";
+
+/// Unlink `snapshot.v<N>` files other than `keep` whose mtime age exceeds
+/// `grace_secs` — the reader-grace window of SPEC-03 §3 (the previous
+/// snapshot is unlinked only once no reader can still hold it). Returns the
+/// ids removed, ascending.
+pub fn gc_snapshots(db_dir: &Path, keep: u64, grace_secs: u64) -> Result<Vec<u64>, ManifestError> {
+    let mut removed = Vec::new();
+    for entry in fs::read_dir(db_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(stem) = name.strip_prefix(SNAPSHOT_PREFIX) else {
+            continue;
+        };
+        if stem.is_empty() || !stem.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let id: u64 = stem.parse().map_err(|_| ManifestError::Invalid {
+            reason: format!("snapshot id out of range: {name}"),
+        })?;
+        if id == keep {
+            continue;
+        }
+        if mtime_age_secs(&entry.path())? > grace_secs {
+            fs::remove_file(entry.path())?;
+            removed.push(id);
+        }
+    }
+    removed.sort_unstable();
+    Ok(removed)
+}
+
 /// SFT-6.3: retire journal segments numbered `< below_segment`.
 /// `audit_retain = true` → moved to `journal/archive/` (present and
 /// importable); `false` → deleted. Active segments are untouched.

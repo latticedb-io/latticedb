@@ -476,7 +476,13 @@ impl PartBuilder {
                 }
             };
             let values_enc = encode_value(self.chain.value, &val_col)?;
-            let lsn_enc = encode_value(self.chain.value, &ColumnData::I64(lsns))?;
+            // The LSN column is an I64 column: it takes the I64 value codec,
+            // never the value column's codec — a dictionary / bitpack /
+            // Gorilla chain cannot encode integers.
+            let lsn_enc = encode_value(
+                crate::codecs::default_chain(ColumnType::I64).value,
+                &ColumnData::I64(lsns),
+            )?;
             let data_off = out.len() - data_start;
             out.extend_from_slice(&(values_enc.len() as u32).to_le_bytes());
             out.extend_from_slice(&(lsn_enc.len() as u32).to_le_bytes());
@@ -814,7 +820,7 @@ impl Part {
             entry.present_count as usize,
         )?;
         let lsns = crate::codecs::decode_value(
-            self.chain.value,
+            crate::codecs::default_chain(ColumnType::I64).value,
             ColumnType::I64,
             &region[8 + val_len..8 + val_len + lsn_len],
             entry.cell_count as usize,

@@ -4,11 +4,58 @@
 
 use lattice_core::arrays::GraphArrays;
 use lattice_core::ids::NodeId;
-use lattice_core::value::Value;
-use lattice_schema::entities::Monotonicity;
+use lattice_core::value::{RecordValue, Value};
+use lattice_schema::entities::{
+    AttrType, AttributeDef, ElemType, EnumType, Monotonicity, RecordType, ScalarType,
+};
 use lattice_schema::key::Key;
 use lattice_schema::txn::SchemaOp;
+use std::collections::BTreeMap;
 use std::fmt;
+
+fn scalar_conforms(t: ScalarType, value: &Value) -> bool {
+    match (t, value) {
+        (ScalarType::Bool, Value::Bool(_))
+        | (ScalarType::I64, Value::I64(_))
+        | (ScalarType::F64, Value::F64(_))
+        | (ScalarType::String, Value::Str(_))
+        | (ScalarType::Bytes, Value::Bytes(_))
+        | (ScalarType::Timestamp, Value::Timestamp(_))
+        | (ScalarType::Duration, Value::Duration(_))
+        | (ScalarType::NodeRef, Value::NodeRef(_)) => true,
+        (ScalarType::Decimal { precision, scale }, Value::Decimal(d)) => {
+            d.precision == precision && d.scale == scale
+        }
+        _ => false,
+    }
+}
+
+fn elem_conforms(elem: &ElemType, value: &Value, enums: &BTreeMap<Key, EnumType>) -> bool {
+    match elem {
+        ElemType::Scalar(t) => scalar_conforms(*t, value),
+        ElemType::Enum(k) => match value {
+            Value::Enum(i) => enums.get(k).is_some_and(|e| (*i as usize) < e.values.len()),
+            _ => false,
+        },
+    }
+}
+
+fn record_conforms(
+    declared: &RecordType,
+    rec: &RecordValue,
+    enums: &BTreeMap<Key, EnumType>,
+) -> bool {
+    // A present field must sit on a declared position and match its type;
+    // absent fields are always legal (absence semantics, SPEC-01 §5).
+    (0..rec.field_count()).all(|i| {
+        rec.get(i).is_none_or(|v| {
+            declared
+                .fields
+                .get(i)
+                .is_some_and(|(_, elem)| elem_conforms(elem, v, enums))
+        })
+    })
+}
 
 /// The acting subject's required scope for an operation (R11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +187,57 @@ impl Validators {
             ));
         }
         Ok(())
+    }
+
+    /// R6 — value/type conformance: the value must fit the attribute's
+    /// declared type — scalar kind, decimal `(p, s)`, enum index range, record
+    /// field positions and field types, vector element type. Decimal
+    /// precision/scale must equal the declaration exactly: parts store the
+    /// unscaled value plus the attribute's `(p, s)`, so a differing value
+    /// would not round-trip (SPEC-03 D1).
+    pub fn r6_attr_type(
+        def: &AttributeDef,
+        value: &Value,
+        enums: &BTreeMap<Key, EnumType>,
+        records: &BTreeMap<Key, RecordType>,
+    ) -> R {
+        let ok = match &def.attr_type {
+            AttrType::Scalar(t) => scalar_conforms(*t, value),
+            AttrType::Enum(k) => match value {
+                Value::Enum(i) => enums.get(k).is_some_and(|e| (*i as usize) < e.values.len()),
+                _ => false,
+            },
+            AttrType::Record(k) => match value {
+                Value::Record(rec) => records
+                    .get(k)
+                    .is_some_and(|r| record_conforms(r, rec, enums)),
+                _ => false,
+            },
+            AttrType::Vector { elem } => elem_conforms(elem, value, enums),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(Violation::new(
+                "R6",
+                format!(
+                    "value {:?} does not conform to attribute `{}` (declared {:?})",
+                    value, def.key, def.attr_type
+                ),
+            ))
+        }
+    }
+
+    /// R6 — element conformance for vector cells (CELLS_APPEND / ROW_APPEND).
+    pub fn r6_elem_type(elem: &ElemType, value: &Value, enums: &BTreeMap<Key, EnumType>) -> R {
+        if elem_conforms(elem, value, enums) {
+            Ok(())
+        } else {
+            Err(Violation::new(
+                "R6",
+                format!("value {value:?} does not conform to element type {elem:?}"),
+            ))
+        }
     }
 
     /// R7 — monotone writes: an attribute declaring `increasing` accepts new

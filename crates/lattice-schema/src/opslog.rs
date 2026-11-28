@@ -1239,6 +1239,11 @@ pub fn replay_ops(ops: &[SchemaOp]) -> Result<(SchemaState, Vec<crate::txn::OpRe
         deprecations: Default::default(),
         ops_log: Vec::new(),
     };
+    // No ops = a fresh catalog. Committing an empty list would record a
+    // schema txn (and bump the epoch) that never happened.
+    if ops.is_empty() {
+        return Ok((state, Vec::new()));
+    }
     let outcomes = state.plan(ops);
     for o in &outcomes {
         if !o.accepted {

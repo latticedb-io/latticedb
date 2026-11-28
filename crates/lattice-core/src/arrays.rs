@@ -394,6 +394,15 @@ impl GraphArrays {
         Ok(())
     }
 
+    /// Bump a node's epoch for a mutation the arrays do not carry
+    /// themselves (cell writes live in the engine's cell store; the epoch is
+    /// the per-node change counter, ARCHITECTURE §4).
+    pub fn touch_node(&mut self, id: NodeId) -> Result<(), ArrayError> {
+        self.alive_node(id)?;
+        self.touch(id);
+        Ok(())
+    }
+
     // -- reads ---------------------------------------------------------------
 
     pub fn is_alive(&self, id: NodeId) -> bool {
@@ -447,8 +456,19 @@ impl GraphArrays {
         self.edges.get(eid.0 as usize).filter(|e| e.alive)
     }
 
+    /// The edge-table slot, live OR dead (`edge` serves live edges only).
+    pub fn edge_slot(&self, eid: EdgeId) -> Option<&EdgeRec> {
+        self.edges.get(eid.0 as usize)
+    }
+
     pub fn edge_count(&self) -> usize {
         self.edges.iter().filter(|e| e.alive).count()
+    }
+
+    /// Edge-table slots — live AND dead. Edge ids are slot indexes and dead
+    /// slots are never reused, so this is also the id the next edge takes.
+    pub fn edge_slots(&self) -> usize {
+        self.edges.len()
     }
 
     pub fn alive_count(&self) -> usize {

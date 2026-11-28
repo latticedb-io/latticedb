@@ -94,6 +94,26 @@ pub struct ActionOutcome {
     pub cancelled: Vec<(NodeId, String)>,
 }
 
+/// One planned sibling cancellation: the reason, and `(to state, code)` when
+/// a declared cancel motion exists (`None` = record-only).
+pub type PlannedCancel = (NodeId, String, Option<(Key, u8)>);
+
+/// Read-only result of [`Machine::check_action`]: everything the apply step
+/// will do, resolved before anything is mutated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionCheck {
+    pub transition: Key,
+    pub actor: ActorClass,
+    pub from: Key,
+    pub to: Key,
+    /// SoA state code of `to` (declaration index in the model).
+    pub to_code: u8,
+    /// Spawn effects in order: `(instance_of, child type code)`.
+    pub spawns: Vec<(Key, u16)>,
+    /// Siblings the effects cancel (see [`PlannedCancel`]).
+    pub cancels: Vec<PlannedCancel>,
+}
+
 /// Dispatch errors — wire code mapping happens at the protocol layer (M3).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DispatchError {
@@ -245,6 +265,26 @@ pub struct Machine {
 
 impl Machine {
     pub fn new(arrays: GraphArrays, compiled: Compiled, catalog: &Catalog) -> Self {
+        // Fresh fixtures: code = catalog declaration order. Databases use
+        // [`Machine::with_type_codes`] with lineage-stable codes (the
+        // enumeration order shifts when a type is added later).
+        let mut node_type_codes = BTreeMap::new();
+        for (i, ntk) in catalog.node_types.keys().enumerate() {
+            node_type_codes.insert(ntk.clone(), i as u16);
+        }
+        Self::with_type_codes(arrays, compiled, catalog, &node_type_codes)
+    }
+
+    /// Build against explicit node-type codes. Codes are persisted per node
+    /// in snapshots (SPEC-03 §3 `node_type[u16·V]`), so a database must hand
+    /// in the lineage-stable assignment (`SchemaState::node_type_codes`) —
+    /// never a per-epoch enumeration.
+    pub fn with_type_codes(
+        arrays: GraphArrays,
+        compiled: Compiled,
+        catalog: &Catalog,
+        node_type_codes: &BTreeMap<Key, u16>,
+    ) -> Self {
         let fsm = FsmRegistry::from_compiled(&compiled);
         let transitions: BTreeMap<Key, Transition> = catalog.transitions.clone();
         let rules: BTreeMap<Key, PredicateForm> = catalog
@@ -252,19 +292,18 @@ impl Machine {
             .iter()
             .map(|(k, r)| (k.clone(), r.form.clone()))
             .collect();
-        let mut node_type_codes = BTreeMap::new();
-        let mut node_type_model = BTreeMap::new();
-        for (i, (ntk, nt)) in catalog.node_types.iter().enumerate() {
-            node_type_codes.insert(ntk.clone(), i as u16);
-            node_type_model.insert(ntk.clone(), nt.state_model.clone());
-        }
+        let node_type_model: BTreeMap<Key, Key> = catalog
+            .node_types
+            .iter()
+            .map(|(ntk, nt)| (ntk.clone(), nt.state_model.clone()))
+            .collect();
         Self {
             arrays,
             fsm,
             compiled,
             transitions,
             rules,
-            node_type_codes,
+            node_type_codes: node_type_codes.clone(),
             node_type_model,
             cells: BTreeMap::new(),
             logical_us: 0,
@@ -383,6 +422,15 @@ impl Machine {
             .filter(|((_, a, _), _)| a == id)
             .map(|((_, _, k), cell)| (*k, cell))
             .collect()
+    }
+
+    /// Every stored cell as `(node, attr id, k)` → cell, in store order
+    /// (node, attr, k ascending). Cells of deleted nodes stay in the store
+    /// until a checkpoint — callers test liveness against the arrays.
+    pub fn cells(&self) -> impl Iterator<Item = ((NodeId, AttrId, KeyIndex), &StoredCell)> {
+        self.cells
+            .iter()
+            .map(|((node, attr, k), cell)| ((NodeId(*node), AttrId(*attr), KeyIndex(*k)), cell))
     }
 
     /// Live enabled-action index for a node: static action_index filtered by
@@ -528,7 +576,9 @@ impl Machine {
         }
     }
 
-    /// Dispatch one action (SPEC-01 §9): validate → gate → move → effects.
+    /// Dispatch one action (SPEC-01 §9): check → apply. Every check runs
+    /// before the first mutation, so a rejected action never leaves partial
+    /// effects behind.
     pub fn apply_action(
         &mut self,
         node: NodeId,
@@ -537,6 +587,21 @@ impl Machine {
         subject: impl Into<String>,
         payload: Option<Value>,
     ) -> Result<ActionOutcome, DispatchError> {
+        let check = self.check_action(node, transition_key, actor, payload.as_ref())?;
+        self.apply_checked(node, check, subject.into(), payload)
+    }
+
+    /// Read-only pre-flight of an action: every check `apply_action` performs
+    /// and nothing else. The kernel validates through this before it journals
+    /// (plan → journal → apply), so a record is only written for an action
+    /// that will apply.
+    pub fn check_action(
+        &self,
+        node: NodeId,
+        transition_key: &Key,
+        actor: ActorClass,
+        payload: Option<&Value>,
+    ) -> Result<ActionCheck, DispatchError> {
         let t = self
             .transitions
             .get(transition_key)
@@ -617,12 +682,18 @@ impl Machine {
         }
         // FSM motion (declared-only, ranks, absorbing — T-201).
         let allowed = self.fsm.check_motion(&model_key, &t.from, &t.to)?;
-        let to_code = allowed.to.code;
 
-        // Effects.
-        let mut engine_facts = Vec::new();
-        let mut spawned = None;
-        let mut cancelled = Vec::new();
+        let mut check = ActionCheck {
+            transition: transition_key.clone(),
+            actor,
+            from: allowed.from.key.clone(),
+            to: allowed.to.key.clone(),
+            to_code: allowed.to.code,
+            spawns: Vec::new(),
+            cancels: Vec::new(),
+        };
+
+        // Effects: resolved here, applied by `apply_checked`.
         for effect in &t.effects {
             match effect {
                 Effect::Spawn { instance_of } => {
@@ -631,41 +702,27 @@ impl Machine {
                             key: instance_of.clone(),
                         }
                     })?;
-                    let child = self
-                        .arrays
-                        .add_child(node, child_type_code)
-                        .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
-                    engine_facts.push(EngineFact::AddVertex {
-                        node: child,
-                        parent: node,
-                        node_type: instance_of.clone(),
-                    });
-                    spawned = Some(child);
+                    check.spawns.push((instance_of.clone(), child_type_code));
                 }
                 Effect::SelectBranch => {
                     // The selected branch rides in the payload as NodeRef.
-                    let Some(Value::NodeRef(selected)) = payload.as_ref() else {
+                    let Some(Value::NodeRef(selected)) = payload else {
                         return Err(DispatchError::MissingBranchSelection);
                     };
                     let selected = *selected;
-                    let (kept, others) = self.xor_branches_of(node, selected)?;
-                    let _ = kept;
+                    let (_kept, others) = self.xor_branches_of(node, selected)?;
                     for sibling in others {
                         let reason = format!("select_branch: {selected:?} chosen over {sibling:?}");
-                        if let Some(_moved_to) = self.cancel_via_declared_motion(sibling)? {
-                            cancelled.push((sibling, reason.clone()));
-                            engine_facts.push(EngineFact::CancelSibling {
-                                node: sibling,
-                                reason,
-                            });
-                        } else {
+                        match self.plan_cancel_motion(sibling)? {
+                            Some((to, code)) => {
+                                check.cancels.push((sibling, reason, Some((to, code))))
+                            }
                             // No declared cancel path: record-only (observable).
-                            cancelled
-                                .push((sibling, format!("{reason} (no declared cancel motion)")));
-                            engine_facts.push(EngineFact::CancelSibling {
-                                node: sibling,
-                                reason: format!("{reason} (no declared cancel motion)"),
-                            });
+                            None => check.cancels.push((
+                                sibling,
+                                format!("{reason} (no declared cancel motion)"),
+                                None,
+                            )),
                         }
                     }
                 }
@@ -674,37 +731,86 @@ impl Machine {
                     // parent (reuses select_branch machinery, micro-dec 8).
                     for sibling in self.xor_siblings_via_parents(node) {
                         let reason = format!("cancel_siblings: superseded by {node:?}");
-                        if self.cancel_via_declared_motion(sibling)?.is_some() {
-                            cancelled.push((sibling, reason.clone()));
-                            engine_facts.push(EngineFact::CancelSibling {
-                                node: sibling,
-                                reason,
-                            });
+                        if let Some((to, code)) = self.plan_cancel_motion(sibling)? {
+                            check.cancels.push((sibling, reason, Some((to, code))));
                         }
                     }
                 }
             }
         }
 
+        // Every spawn consumes one node id; refuse before journaling.
+        let needed = u64::from(self.arrays.id_space().watermark()) + check.spawns.len() as u64;
+        if needed >= u64::from(lattice_core::ids::NO_PARENT) {
+            return Err(DispatchError::Engine(EngineError::Arrays(
+                lattice_core::arrays::ArrayError::IdSpace(
+                    lattice_core::ids::IdSpaceError::Exhausted,
+                ),
+            )));
+        }
+        Ok(check)
+    }
+
+    /// Apply a checked action — mutations only. Infallible for any action
+    /// that passed [`Machine::check_action`]; the kernel treats an error here
+    /// as a post-sequencing fault.
+    fn apply_checked(
+        &mut self,
+        node: NodeId,
+        check: ActionCheck,
+        subject: String,
+        payload: Option<Value>,
+    ) -> Result<ActionOutcome, DispatchError> {
+        let mut engine_facts = Vec::new();
+        let mut spawned = None;
+        let mut cancelled = Vec::new();
+        for (instance_of, child_type_code) in &check.spawns {
+            let child = self
+                .arrays
+                .add_child(node, *child_type_code)
+                .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+            self.initialize_node(child)?;
+            engine_facts.push(EngineFact::AddVertex {
+                node: child,
+                parent: node,
+                node_type: instance_of.clone(),
+            });
+            if spawned.is_none() {
+                spawned = Some(child);
+            }
+        }
+        for (sibling, reason, motion) in &check.cancels {
+            if let Some((_, code)) = motion {
+                self.arrays
+                    .set_state(*sibling, *code)
+                    .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+            }
+            cancelled.push((*sibling, reason.clone()));
+            engine_facts.push(EngineFact::CancelSibling {
+                node: *sibling,
+                reason: reason.clone(),
+            });
+        }
+
         // State motion (the ONLY state write — P2).
         self.arrays
-            .set_state(node, to_code)
+            .set_state(node, check.to_code)
             .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
-        self.rearm_timers(node, &allowed.to.key)?;
+        self.rearm_timers(node, &check.to)?;
 
         let record = ActionRecord {
             lsn: None, // sequencer assigns (tx layer)
             node,
-            transition: transition_key.clone(),
-            actor_class: actor,
-            subject: subject.into(),
+            transition: check.transition.clone(),
+            actor_class: check.actor,
+            subject,
             payload,
-            from: allowed.from.key.clone(),
-            to: allowed.to.key.clone(),
+            from: check.from.clone(),
+            to: check.to.clone(),
         };
         Ok(ActionOutcome {
-            from: allowed.from.key,
-            to: allowed.to.key,
+            from: check.from,
+            to: check.to,
             record,
             engine_facts,
             spawned,
@@ -758,12 +864,11 @@ impl Machine {
         siblings
     }
 
-    /// Cancel a sibling: find a declared motion from its current state to a
-    /// failure terminal; apply through the FSM. Returns the moved-to state.
-    fn cancel_via_declared_motion(
-        &mut self,
-        sibling: NodeId,
-    ) -> Result<Option<Key>, DispatchError> {
+    /// Plan a sibling's cancellation: find a declared motion from its current
+    /// state to a failure terminal and validate it through the FSM. Returns
+    /// the target state key and code; `None` when no declared cancel path
+    /// exists (read-only — the caller applies the motion).
+    fn plan_cancel_motion(&self, sibling: NodeId) -> Result<Option<(Key, u8)>, DispatchError> {
         let type_code = self.arrays.type_of(sibling);
         let Some(ntk) = self.node_type_key(type_code) else {
             return Ok(None);
@@ -790,10 +895,7 @@ impl Machine {
         }
         let Some(to) = cancel_to else { return Ok(None) };
         let allowed = self.fsm.check_motion(&model_key, cur, &to)?;
-        self.arrays
-            .set_state(sibling, allowed.to.code)
-            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
-        Ok(Some(to))
+        Ok(Some((to, allowed.to.code)))
     }
 
     pub fn cancellation_reason(&self, node: NodeId) -> Option<&String> {
@@ -814,7 +916,35 @@ impl Machine {
     /// (arrays, cells, journal time, timers, guard params). This is the
     /// per-epoch recompile path (ARCHITECTURE §7): the machine is
     /// reconstructed, live facts ride across untouched.
-    pub fn recompile(mut self, compiled: Compiled, catalog: &Catalog) -> Self {
+    pub fn recompile(self, compiled: Compiled, catalog: &Catalog) -> Self {
+        let mut codes = BTreeMap::new();
+        for (i, ntk) in catalog.node_types.keys().enumerate() {
+            codes.insert(ntk.clone(), i as u16);
+        }
+        self.recompile_with_type_codes(compiled, catalog, &codes)
+    }
+
+    /// Per-epoch recompile with explicit (lineage-stable) node-type codes —
+    /// the form databases use (see [`Machine::with_type_codes`]).
+    pub fn recompile_with_type_codes(
+        mut self,
+        compiled: Compiled,
+        catalog: &Catalog,
+        node_type_codes: &BTreeMap<Key, u16>,
+    ) -> Self {
+        self.recompile_in_place(compiled, catalog, node_type_codes);
+        self
+    }
+
+    /// In-place per-epoch recompile: live facts (arrays, cells, journal time,
+    /// timers, guard params) ride across untouched; dispatch tables, rules and
+    /// the compiled epoch are rebuilt. No clone of the live state.
+    pub fn recompile_in_place(
+        &mut self,
+        compiled: Compiled,
+        catalog: &Catalog,
+        node_type_codes: &BTreeMap<Key, u16>,
+    ) {
         let arrays = std::mem::replace(
             &mut self.arrays,
             GraphArrays::new(lattice_core::ids::NodeIdSpace::new()),
@@ -824,13 +954,108 @@ impl Machine {
         let wheel = std::mem::take(&mut self.wheel);
         let guard_params = std::mem::take(&mut self.guard_params);
         let next_guard_param_id = self.next_guard_param_id;
-        let mut machine = Machine::new(arrays, compiled, catalog);
-        machine.cells = cells;
-        machine.logical_us = logical_us;
-        machine.wheel = wheel;
-        machine.guard_params = guard_params;
-        machine.next_guard_param_id = next_guard_param_id;
-        machine
+        *self = Machine::with_type_codes(arrays, compiled, catalog, node_type_codes);
+        self.cells = cells;
+        self.logical_us = logical_us;
+        self.wheel = wheel;
+        self.guard_params = guard_params;
+        self.next_guard_param_id = next_guard_param_id;
+    }
+
+    /// Drop every cell of a node — a deleted node's cells die with it
+    /// (SPEC-03 §7 purge correctness), so live state, journal replay and a
+    /// checkpoint restore all agree on what the store holds.
+    pub fn drop_cells(&mut self, node: NodeId) -> usize {
+        let before = self.cells.len();
+        self.cells.retain(|(n, _, _), _| *n != node.0);
+        before - self.cells.len()
+    }
+
+    /// Does any LIVE node hold a `node_ref` cell whose target is in
+    /// `targets`? Returns the holding node. Linear over the cell store —
+    /// the delete guard (SPEC-01 §3: deleting a referenced node is rejected
+    /// `HAS_DEPENDENTS`).
+    pub fn node_ref_holder(&self, targets: &std::collections::BTreeSet<NodeId>) -> Option<NodeId> {
+        self.cells
+            .iter()
+            .find_map(|((node, _, _), cell)| match &cell.value {
+                Value::NodeRef(t) if targets.contains(t) && self.arrays.is_alive(NodeId(*node)) => {
+                    Some(NodeId(*node))
+                }
+                _ => None,
+            })
+    }
+
+    /// Id the next vertex creation will allocate — a peek, no mutation. The
+    /// kernel writes this id into the journal record before the record is
+    /// applied, so the record is complete at sequencing time.
+    pub fn peek_next_node_id(&self) -> NodeId {
+        NodeId(self.arrays.id_space().watermark())
+    }
+
+    /// `aux` id the next GUARD edge will allocate — a peek, no mutation.
+    pub fn peek_next_guard_aux(&self) -> u32 {
+        self.next_guard_param_id as u32
+    }
+
+    /// Put a freshly created node into its model's `initial` state and arm
+    /// the timers leaving that state (arming = entering the from-state,
+    /// SPEC-01 §9). Creation is the first state entry.
+    pub fn initialize_node(&mut self, node: NodeId) -> Result<(), DispatchError> {
+        let type_code = self.arrays.type_of(node);
+        let ntk = self
+            .node_type_key(type_code)
+            .ok_or(DispatchError::UnknownNodeType {
+                key: key_of_code(type_code),
+            })?
+            .clone();
+        let model_key = self.node_type_model[&ntk].clone();
+        let model = self
+            .compiled
+            .models
+            .get(&model_key)
+            .ok_or(EngineError::UnknownModel {
+                model: model_key.clone(),
+            })?;
+        let initial = model.initial.clone();
+        let Some(code) = model
+            .states
+            .iter()
+            .position(|(k, _, _)| *k == initial)
+            .map(|i| i as u8)
+        else {
+            return Err(corrupt_state_code(model_key, 0));
+        };
+        self.arrays
+            .set_state(node, code)
+            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+        self.rearm_timers(node, &initial)
+    }
+
+    /// Remove a dependency edge together with its GUARD params (the params
+    /// are keyed by the edge's `aux` id — they must not outlive the edge).
+    pub fn remove_edge(&mut self, eid: lattice_core::ids::EdgeId) -> Result<(), DispatchError> {
+        let aux = self
+            .arrays
+            .edge(eid)
+            .map(|r| r.aux)
+            .ok_or(DispatchError::Engine(EngineError::Arrays(
+                lattice_core::arrays::ArrayError::EdgeNotFound(eid),
+            )))?;
+        self.arrays
+            .remove_edge(eid)
+            .map_err(|e| DispatchError::Engine(EngineError::Arrays(e)))?;
+        self.guard_params.remove(&(aux as u64));
+        Ok(())
+    }
+
+    /// Recovery: restore a GUARD edge's params from its journal record and
+    /// keep the `aux` allocator above every restored id (no reuse).
+    pub fn restore_guard_param(&mut self, aux: u32, sigma: Key, tau: Key) {
+        self.guard_params.insert(aux as u64, (sigma, tau));
+        if u64::from(aux) >= self.next_guard_param_id {
+            self.next_guard_param_id = u64::from(aux) + 1;
+        }
     }
 
     /// A node's current state KEY (SoA u8 → model declaration order).

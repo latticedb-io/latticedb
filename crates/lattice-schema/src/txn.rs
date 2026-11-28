@@ -23,7 +23,7 @@ use crate::catalog::Catalog;
 use crate::entities::*;
 use crate::key::Key;
 use lattice_core::value::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// Deprecation registries — catalog-level by design (ED-06): entity shapes
@@ -204,6 +204,78 @@ impl SchemaState {
         *self = scratch;
         Ok(epoch)
     }
+
+    /// Lineage-stable node-type codes: a type's code is the index of its
+    /// FIRST appearance in the committed op history — append-only, never
+    /// reused, the attr_id discipline of ARCHITECTURE §4. Codes are persisted
+    /// per node in snapshots, so they must not depend on per-epoch catalog
+    /// order (adding a type must never re-type existing nodes). Types that
+    /// entered the catalog without a `CreateNodeType` op (fixtures built
+    /// directly on the catalog) follow in key order.
+    pub fn node_type_codes(&self) -> BTreeMap<Key, u16> {
+        let present: Vec<Key> = self.catalog.node_types.keys().cloned().collect();
+        lineage_codes(&self.ops_log, &present, |op| match op {
+            SchemaOp::CreateNodeType(n) => Some(n.key.clone()),
+            _ => None,
+        })
+    }
+
+    /// Graph ids by the same lineage rule (`CreateGraph` order).
+    pub fn graph_ids(&self) -> BTreeMap<Key, u16> {
+        let present: Vec<Key> = self.catalog.graphs.keys().cloned().collect();
+        lineage_codes(&self.ops_log, &present, |op| match op {
+            SchemaOp::CreateGraph(g) => Some(g.key.clone()),
+            _ => None,
+        })
+    }
+
+    /// Attribute-id lineage by the same rule (`CreateAttribute` order), in
+    /// the shape [`crate::compile::compile_with_lineage`] takes as
+    /// `prev_attr_ids`. Cells and parts are keyed by attr id, so a fresh
+    /// open must rebuild the SAME assignment the live process used — a
+    /// per-open sort would silently re-key every cell.
+    pub fn attr_id_lineage(&self) -> BTreeMap<Key, lattice_core::ids::AttrId> {
+        let present: Vec<Key> = self.catalog.attributes.keys().cloned().collect();
+        lineage_codes(&self.ops_log, &present, |op| match op {
+            SchemaOp::CreateAttribute(a) => Some(a.key.clone()),
+            _ => None,
+        })
+        .into_iter()
+        .map(|(k, id)| (k, lattice_core::ids::AttrId(id)))
+        .collect()
+    }
+}
+
+/// `code = index of first appearance` over the op history, then the
+/// remaining `present` keys in key order. A catalog with more than
+/// `u16::MAX` entities leaves the excess WITHOUT a code — any use surfaces
+/// as "unknown" downstream (loud), never as a silently wrapped id.
+fn lineage_codes(
+    ops_log: &[Vec<SchemaOp>],
+    present: &[Key],
+    first: impl Fn(&SchemaOp) -> Option<Key>,
+) -> BTreeMap<Key, u16> {
+    let mut codes: BTreeMap<Key, u16> = BTreeMap::new();
+    let mut next: u32 = 0;
+    let mut assign = |codes: &mut BTreeMap<Key, u16>, key: &Key| {
+        if !codes.contains_key(key) {
+            if let Ok(code) = u16::try_from(next) {
+                codes.insert(key.clone(), code);
+            }
+            next += 1;
+        }
+    };
+    for txn in ops_log {
+        for op in txn {
+            if let Some(k) = first(op) {
+                assign(&mut codes, &k);
+            }
+        }
+    }
+    for key in present {
+        assign(&mut codes, key);
+    }
+    codes
 }
 
 /// Shared validation pass for plan and commit (SGT-16.3 fidelity): accepted

@@ -565,10 +565,56 @@ impl JournalWriter {
         Ok((first, written))
     }
 
+    /// Write one whole transaction in a single call: BEGIN_TXN, the given
+    /// records in order, COMMIT. Returns every record's LSN in order plus the
+    /// txn's `[first, last]` range (`first` = BEGIN, `last` = COMMIT) — the
+    /// kernel stamps each applied record with its LSN (cells carry it,
+    /// SPEC-03 §4). Payloads are opaque here (tx-engine territory).
+    pub fn write_txn(
+        &mut self,
+        txn_id: u64,
+        records: &[(RecordKind, &[u8])],
+    ) -> Result<TxnLsns, JournalError> {
+        let first = self.begin_txn(txn_id)?;
+        let mut lsns = Vec::with_capacity(records.len());
+        for (kind, payload) in records {
+            lsns.push(self.append(txn_id, *kind, payload)?);
+        }
+        let (_, last) = self.commit_txn(txn_id)?;
+        Ok(TxnLsns {
+            first,
+            last,
+            records: lsns,
+        })
+    }
+
+    /// Start a new segment at a checkpoint boundary (SPEC-03 §6: "new
+    /// segment … or on checkpoint"). Seals the active segment; appends
+    /// continue in `segment + 1` with unchanged LSN continuity.
+    pub fn rotate(&mut self) -> Result<(), JournalError> {
+        self.file.flush()?;
+        self.file.sync_data()?;
+        self.segment += 1;
+        self.file = File::create(segment_path(&self.dir, self.segment))?;
+        self.segment_bytes = 0;
+        Ok(())
+    }
+
     /// fdatasync the active segment (group-commit boundary — SPEC-03 §9.8).
     pub fn sync(&mut self) -> Result<(), JournalError> {
         self.file.flush()?;
         self.file.sync_data()?;
         Ok(())
     }
+}
+
+/// LSNs of one transaction written through [`JournalWriter::write_txn`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxnLsns {
+    /// LSN of the BEGIN_TXN frame.
+    pub first: u64,
+    /// LSN of the COMMIT frame.
+    pub last: u64,
+    /// LSN of each data record, in write order.
+    pub records: Vec<u64>,
 }

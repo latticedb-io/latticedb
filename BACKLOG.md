@@ -129,9 +129,29 @@ does not run propagation to quiesce, and emits no watches; (4) the M1 exit smoke
 first, listeners next, external surfaces (gRPC admin, Kotlin SDK, MCP, REST/WS, SPA,
 pooler) last. MANIFEST §8 / ARCH §13 placed the SDK and MCP inside M3.
 **Resolution (2026-11-28, owner):** sequence re-cut recorded in MANIFEST §10 and
-ARCH §13; kernel assembly T-313, read path T-314, full CLI T-316;
+ARCH §13; kernel assembly T-313 (delivered, in review), read path T-314, full CLI T-316;
 the untested kernel spec IDs found by the coverage audit (TASKS.md) are closed by T-313,
 T-317, T-318.
+
+**SQ-09 · Logical time has no journal record — timers cannot survive a restart ·
+found T-313 re-read · owner decision required.** P8 / ARCH §5.4: time enters only
+through the timer wheel; "deadlines and lags are journal facts; re-derivable at replay".
+But SPEC-03 §6's closed record-type list has no time-advance record, `Machine::logical_us`
+is never persisted, and timers are armed at `logical_us` on state entry. Consequences: after
+a restart the wheel is empty and `written_us` of restored cells is 0, so `epoch_gte`
+predicates and lag/deadline timing diverge from the pre-restart process. T-313 therefore
+keeps the timer path out of the journaled write path (no `advance_time` on the kernel) and
+does not re-arm timers at open. For the same reason a graph's `created_at_us` ("a
+journal-authored timestamp fact") is still supplied by the caller of `SCHEMA_TXN`. Options: (a) DEC adding an `ADVANCE_TIME {to_us}` record
+to SPEC-03 §6; timer firings then enter the write path as ACTION records (author=timer);
+(b) stamp journal time on every record and derive. Any choice = DEC in SPEC-03.
+
+**SQ-10 · No wire code for a state-locked attribute write · found T-313 · owner
+decision required.** SPEC-01 §7/§11: attribute locking is a consequence of state
+(SGT-7.3) but the closed code registry (SPEC-02 §7) has no code for it and SGT-7.3 names
+none. T-313 maps the rejection to `FORBIDDEN` with a "state lock" hint so agents are not
+told to request a grant for a lock. Options: (a) keep `FORBIDDEN` + hint; (b) DEC adding a
+dedicated code (e.g. `ATTR_LOCKED`).
 
 ---
 
@@ -221,11 +241,87 @@ run against the encoders with a fake peer; 4.1, 4.2 (integration) run against
 pass over live connections is T-320; binding test levels stay as written.
 
 **ED-13 · WPT-5.2 expected outcome not asserted by the test carrying its ID · T-304 ·
-M3 gate (Supervisor to verify).** `wpt_5_2_txn_frames` exercises frame handling against
+M3 gate (Supervisor to verify).** `wpt_5_2_txn_frames` (wire crate) exercises frame handling against
 `FakeSink`; "TXN of 3 commands, middle invalid → none applied, single LSN range absent,
 error names the failing command" is not asserted there.
 `failing_command_mid_txn_is_error_frame` asserts that a command before the failing one
 stays applied inside an open txn — the opposite of §5.2 atomicity; an artifact of
-`FakeSink` executing immediately. Resolution (2026-11-28): kernel form in T-313, wire
-form in T-320.
+`FakeSink` executing immediately. Resolution (2026-11-28): kernel form delivered in T-313
+(`lattice-tx` `wpt_5_2_txn_atomicity_none_applied_and_error_names_the_failing_command`),
+wire form in T-320.
 
+**ED-14 · Node-type codes were not lineage-stable · found T-313 · fixed in T-313.**
+`Machine::new` / `recompile` assigned node-type codes by catalog enumeration order, so a
+type added later with an earlier-sorting key re-typed every existing node, and nothing
+persisted the key→code map that snapshots (`node_type[u16·V]`) rely on. Fix: code = index
+of first appearance in the committed schema-op history (`SchemaState::node_type_codes`),
+rebuildable from the op-log; graph ids follow the same rule.
+
+**ED-15 · Machine-local state is outside the snapshot format · found T-313 · M5 kernel
+completion (T-506) or DEC.** `guard_params` (GUARD sigma/tau), the timer wheel and
+`logical_us` live only in `Machine` memory; SPEC-03 §3's snapshot carries structure +
+catalog only. T-313 rebuilds guard params at open by scanning the full journal for
+`ADD_EDGE` records of live GUARD edges — correct only while the journal is never
+truncated. Timers/time: SQ-09. A durable home (snapshot field or DEC) is still needed.
+
+**ED-16 · Journal horizon cannot advance · found T-313 · M5.** `recover()` starts at LSN 1
+and fails with `LsnGap` if early segments are missing, so the kernel never retires
+segments: checkpoints rotate and swap the MANIFEST but `audit_retain` is effectively always
+true. Needs a horizon-aware recovery (start at `MANIFEST.created_lsn`) before SFT-6.3's
+"removed at horizon" branch can hold end-to-end.
+
+**ED-17 · Spawn effect skips containment (R2) · found T-313 · T-317/T-318.** `apply_action`'s
+`spawn` creates the child without checking `instance_of.parent_type` against the acting
+node's type (SPEC-01 §11 "enforced at node creation"); the shipped bundles and the SGT-9.5
+fixture declare root types only. Decide: schema-commit-time check (P3) or runtime
+`CONTAINMENT`.
+
+**ED-18 · Wire command layer is placeholder-grade · found T-313 · T-319.**
+`lattice_wire::commands` decodes unknown/empty values as `Bool(false)` (silent fallback,
+Rust rule 3), maps every engine error of ATTR_SET to `NOT_MONOTONE` and every LINK failure
+to `CYCLE`, passes GRANT/REVOKE through as no-ops, never dispatches ROW_APPEND, and takes
+the LSN as a caller-supplied argument (the sequencer must assign it). T-319 re-points the
+wire dispatch onto the kernel command API and deletes this path.
+
+**ED-19 · State codes are declaration-order indices · found T-313 · T-317/T-318 (verify).**
+`RemoveState` on a model would shift the codes of later states and re-type live nodes the
+way ED-14 did for node types. Verify R13 occupancy checks make it unreachable, or make
+codes lineage-stable.
+
+**ED-20 · Watch error codes collide with the closed registry · found T-313 · T-319.**
+`lattice-wire/src/watches.rs` defines `WATCH_NOT_FOUND = 0x0317` and
+`BAD_WATCH_PARAMS = 0x0318` — the registry (SPEC-02 §7) assigns those values to
+`FRAME_TOO_LARGE` and `CANCELLED`. Not yet fixed; T-319 maps them onto `NOT_FOUND` /
+`INVALID_KEY` or raises a DEC for new codes.
+
+**ED-21 · Core value codec mis-decoded five types · found T-313 · FIXED in T-313.**
+`lattice-core::value_codec::decode_value` read its fixed-width integers from the padding
+of a scratch buffer: every `I64` / `F64` / `Timestamp` / `Duration` decoded as 0, `NodeRef`
+panicked, and `Decimal` advanced the cursor 16 bytes too far. No test round-tripped those
+tags (storage tests use typed columns). Fixed with per-tag tests
+(`value_codec.rs` unit tests). Any journal or record cell written before the fix would
+have decoded wrong — none exist outside tests.
+
+**ED-22 · Part builder could not build default chains · found T-313 · FIXED in T-313.**
+`PartBuilder::finish` encoded the per-run LSN column with the VALUE column's codec, so a
+dictionary / bitpack / Gorilla chain failed with "codec does not apply to column type
+I64" — i.e. no string, bool or float part could be written with its default chain. Every
+existing part test used an identity chain. The LSN column now takes the I64 value codec;
+regression test `lattice-storage` `part_default_chains.rs`.
+
+**ED-23 · Empty op-log replay committed a phantom schema txn · found T-313 · FIXED in
+T-313.** `opslog::replay_ops(&[])` committed an empty txn: one recorded schema txn and an
+epoch bump for a fresh catalog. Surfaced when the kernel reopened a database whose initial
+snapshot has no ops. Fixed in `replay_ops`; test in `lattice-schema` `lineage.rs`.
+
+**ED-24 · Lock table read a poisoned mutex as "nothing held" · found T-313 · FIXED in
+T-313.** `SubtreeLockTable::{stats, is_held, held_count}` returned defaults on poison and
+`acquire` skipped the stats update silently (Rust rule 3). They now return
+`TxError::LockPoisoned`, and `acquire` hands back the keys instead of succeeding uncounted.
+
+**ED-25 · Explicit-txn concurrency is deliberately simple in v1 · T-313 design ·
+T-319/T-320 to exercise.** One explicit txn per database; its commands run on a
+session-private clone of the engine state (O(state) per BEGIN); commit is refused
+`ORDER_CONFLICT` if any other unit reached the live state meanwhile. Correct and simple;
+throughput of concurrent explicit txns was never a requirement in the spec — revisit with
+evidence once the listener runs real sessions.
