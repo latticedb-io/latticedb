@@ -56,6 +56,82 @@ AlterNodeType {type_key, add_sets, remove_sets} with R13 reference counting;
 (b) keep type replacement as the only path and document the migration pattern.
 Affects SGT-17.4 ergonomics directly.
 
+**SQ-03 · Data-plane listener has no task (M3 mapping gap) · found T-311 · owner
+decision required.** ARCH §13 M3 = `wire` (UDS+TCP full); MANIFEST §8 = "UDS + TCP".
+TASKS.md T-301–T-310 delivered codec/state-machine libraries only: `lattice-wire` has
+no tokio dependency (SPEC-02 §12.8 assigns it one), no accept loop, no session manager,
+no production `CommandSink` (only the test `FakeSink`), and the Host CLI has no `serve`.
+Test docs deferred socket-level variants to "T-304's session layer", then to "T-310's
+listener" — neither built one. Consequences: M3 exit criteria "pipelined sessions" and
+"MCP tool demo" unreachable; T-311/T-312 cannot test against a live server; ED-02 cannot
+resolve. Options: (a) new task — listener + session manager + engine adapter + `serve`,
+then a WPT socket-level pass (ED-12), sequenced before T-311/T-312; (b) build T-311 on
+codec-level mirrors now, live interop later. Any choice = TASKS.md change.
+**Resolution (2026-11-28, owner):** option (a), after the core — listeners T-319, WPT
+socket-level pass T-320; DEC in MANIFEST §10 "Sequence re-cut".
+
+**SQ-04 · Client-visible control-frame wire contract is unpinned · found T-311 ·
+owner decision required.** SPEC-02 §2 says TLV tags are "per §7–§10", but no section
+numbers the control-plane tags; the Rust side takes unpacked scalars (`process_hello`) and
+its tests call AUTH a "placeholder". Unpinned: (1) TLV tags for HELLO / PARAMS / AUTH /
+READY / RESUME / CANCEL; (2) credit renewal — §6 requires the client to renew, the closed
+type registry has no WINDOW_UPDATE, Rust grants credit only in-process, so a wire client
+stalls after the 64-frame default; (3) `session_secret` — CANCEL requires it, READY never
+issues it; (4) ERROR frame — §7 text is `[u16 code][hint][detail]`, Rust emits TLV
+request_id + hint string with no code (`CommandSink::execute` flattens errors to
+`String`); (5) TXN_BEGIN carries no request_id and gets no reply; TXN_NESTED / NO_OPEN_TXN
+surface as Rust `Result` values, not ERROR frames; (6) PING/PONG carry a raw u64, not
+TLV; (7) HELLO has no `database` field although the policy table (§4) matches on it (P6).
+No SDK or listener can be written without these. Decision = DEC entries in SPEC-02 §12.
+**Prerequisite (2026-11-28): must be decided before T-319 (listeners).**
+
+**SQ-05 · PROXY v2 length read little-endian · found T-311 · defect, owner decision
+required.** `handshake.rs::parse_proxy_v2_header` reads the 16-bit address length as LE;
+the PROXY protocol spec (haproxy.org `proxy-protocol.txt` §2.2) defines it in network
+byte order (reference code uses `ntohs`). A standard sender emits `00 0C`; the parser
+reads 3072 and fails `ProxyV2Malformed`. The T-302 unit test passes because its fixture
+is built with `to_le_bytes()`. Also: a TLV tail after the address block is rejected
+instead of skipped, and LOCAL (`0x20`) health-check connections are rejected. SPEC-02 §2
+"little-endian everywhere" governs LatticeDB framing; the PROXY header is an external
+protocol on the MANIFEST §6 path (L4 LB → LatticeDB). Options: (a) DEC — PROXY v2 follows
+the upstream byte order; fix parser + fixtures before T-319 (live PROXY passthrough) and
+T-402; (b) keep LE and require LatticeDB-specific proxies.
+
+**SQ-06 · Pooler implementation language · found T-311 · doc contradiction, owner
+decision required.** ARCH §3 places `lattice-pooler/` in the Rust workspace ("sidecar
+binary … depends: wire") and names only `sdk-kotlin`, `gateway-mcp`, `gateway-rest` as
+Kotlin repos. TASKS.md T-405 depends on T-311 (Kotlin SDK); STATE.md described the pooler
+as Kotlin. Options: (a) Rust per ARCH §3 as written (reuses the `lattice-wire` codec and
+SCRAM client); (b) Kotlin, via DEC amending ARCH §3.
+
+**SQ-07 · Host → Database (P6) has no task · found T-311 · owner decision required.**
+ARCH §4: `database_id` "assigned at CREATE DATABASE"; P6 / MANIFEST §5: one Host hosts
+many Databases (own catalog, journal, node-id space). The repo has `database_id` only as a
+snapshot-header field: no database registry, no create/open/list, one database directory
+per process, no wire field naming the target database. Options: (a) V1 task (Host
+database registry + `database` in HELLO) — milestone to be chosen; (b) V1 = one Database
+per Host, recorded here as a declared deferral.
+
+**SQ-08 · Kernel never assembled: no Database facade, no full CLI · found T-311
+re-read · owner direction given 2026-11-28.** The kernel crates are tested in isolation,
+but no code path runs a command through the ARCH §5.1 spine. Evidence: (1) `JournalSink`
+is implemented only by `MemoryJournal` — the sequencer has never written the durable
+journal (`sequencer.rs:35` defers the adapter to "the Host binary"); one journal txn per
+fact, private `encode_fact` bytes; (2) `FactPayload` carries AttrSet / CellsAppend /
+CreateNode / DeleteNode only — no actions, edges, RowAppend, grants or schema txns, and
+`MachineGate` only liveness-checks CreateNode / DeleteNode (`gate.rs:101`: "replay through
+the arrays path in the host"); (3) the gate does not call `lattice-validate` (R1–R13),
+does not run propagation to quiesce, and emits no watches; (4) the M1 exit smoke
+(`smoke.rs`) imports core/schema/storage only — it bypasses engine, validate and tx;
+(5) the determinism oracle covers storage + schema replay, not engine + tx; (6)
+`latticedb-cli` is an empty binary that prints its version, while ARCH §2 defines it as
+"ops and smoke tests; library mode + wire mode". **Owner direction:** core + full CLI
+first, listeners next, external surfaces (gRPC admin, Kotlin SDK, MCP, REST/WS, SPA,
+pooler) last. MANIFEST §8 / ARCH §13 placed the SDK and MCP inside M3.
+**Resolution (2026-11-28, owner):** sequence re-cut recorded in MANIFEST §10 and
+ARCH §13; kernel assembly T-313, read path T-314, full CLI T-316;
+the untested kernel spec IDs found by the coverage audit (TASKS.md) are closed by T-313,
+T-317, T-318.
 
 ---
 
@@ -69,10 +145,10 @@ packaging.** Host probes CPU + RAM only; disk class needs M4 deployment tooling
 (cgroup-aware RAM accounting also lands there). Config-level determinism (WPT-10.4)
 already covered by `HostSpecs` being an explicit input.
 
-**ED-02 · WPT-10.3 / WPT-10.6 wire-level variants deferred · T-001 · M3 (T-30x).**
+**ED-02 · WPT-10.3 / WPT-10.6 wire-level variants deferred · T-001 · T-320.**
 Config-level semantics fully tested now; the behavioral halves (journal equivalence
 under extreme tunables; live keepalive vs restart-required `max_frame`) need the wire
-stack and land with M3 acceptance.
+stack and land with the WPT socket-level pass.
 
 **ED-03 · Compiler recompiles from scratch per epoch · T-103 · M2/M5 performance gate.**
 ARCH §7 says "the compiler rebuilds masks incrementally". Current `compile()` is a pure
@@ -114,6 +190,12 @@ actual chain, so cross-build decode stays correct). Activate zstd at the parts t
 M5 when the ratio/latency evidence demands; SFT-5.3's ratio bound is met by varint
 zig-zag delta-of-delta alone in the interim.
 
+**ED-10 · Compiled-mask blob is not persisted in snapshots; open always recompiles ·
+T-106 · M5 open-speed gate.** SPEC-03 §3 keeps a compiled-mask blob "for open speed,
+ignored if CRC fails → recompile". v1 writes the blob as absent and recompiles from
+the catalog blob deterministically (recompile identity is already acceptance-tested,
+T-103). Persisting the compiled bytes is an open-latency optimization — measure first.
+
 **ED-11 · Actor-class model research: the MachineOnlyActorSet restriction ·
 owner-flagged 2026-11-27 · DISCUSSION AFTER M5 GATE.** SPEC-01 §9 currently pins:
 a transition with ONLY machine classes (system/timer/guard) in its actor set is
@@ -130,9 +212,20 @@ compiler masks (actor mask), dispatch law, journal Action records (actor_class),
 MCP tool bindings. Any change = DEC entry + SPEC-01 §9 amendment; NOT
 implementable inside V1.
 
-**ED-10 · Compiled-mask blob is not persisted in snapshots; open always recompiles ·
-T-106 · M5 open-speed gate.** SPEC-03 §3 keeps a compiled-mask blob "for open speed,
-ignored if CRC fails → recompile". v1 writes the blob as absent and recompiles from
-the catalog blob deterministically (recompile identity is already acceptance-tested,
-T-103). Persisting the compiled bytes is an open-latency optimization — measure first.
+**ED-12 · SPEC-02 integration-level WPTs accepted in codec/unit form · T-301–T-309 ·
+M3 gate.** Binding test level per SPEC-02 tables vs what runs: 2.1, 2.2, 2.3 (integration)
+run against the encoders with a fake peer; 4.1, 4.2 (integration) run against
+`AuthEngine` in-process; 5.1–5.6, 6.1, 6.2 (integration) run against `Session` with
+`FakeSink`; 7.x, 8.x, 9.1, 9.3 (integration) run against a fake `CommandExecutor`; WPT-1.1
+(transport matrix) has no test at all. Resolution (2026-11-28, owner): the socket-level
+pass over live connections is T-320; binding test levels stay as written.
+
+**ED-13 · WPT-5.2 expected outcome not asserted by the test carrying its ID · T-304 ·
+M3 gate (Supervisor to verify).** `wpt_5_2_txn_frames` exercises frame handling against
+`FakeSink`; "TXN of 3 commands, middle invalid → none applied, single LSN range absent,
+error names the failing command" is not asserted there.
+`failing_command_mid_txn_is_error_frame` asserts that a command before the failing one
+stays applied inside an open txn — the opposite of §5.2 atomicity; an artifact of
+`FakeSink` executing immediately. Resolution (2026-11-28): kernel form in T-313, wire
+form in T-320.
 

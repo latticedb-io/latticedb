@@ -1,75 +1,52 @@
 # STATE — session handoff (volatile; durable rules live in AGENTS.md)
 
-> Updated: 2026-11-27 · Read this first after any restart, then continue from "Next".
+> Updated: 2026-11-28 · Read this first after any restart, then continue from "Next".
 
 ## Where we are
 
-**M0 + M1 COMPLETE** (tag `m1-graph-core`, 2026-11-27). 36 green test targets
-across the workspace; fmt/clippy `-D warnings` clean; production code carries
-zero unwrap/expect (owner Rust rules, AGENTS.md). Supervisor review deferred
-to the V1 gate (owner decision); tasks sit `done (m<N> tag)` in TASKS.md.
-Trunk-based: main only; tags per AGENTS.md rule 9. Next milestone: **M2 —
-semantics engine** (T-201..T-209: FSM registry, transition dispatch, dependency
-algebra, worklist, timer wheel, stall detector, validator suite R1–R13,
-determinism oracle seed).
+M0–M2 tagged (`m0-bootstrap`, `m1-graph-core`, `m2-semantics-engine`). M3 in progress
+under the **re-cut order** (MANIFEST §10 "Sequence re-cut", 2026-11-28): workable DB
+core + full CLI first → listeners → external surfaces last (Kotlin SDK, MCP, gRPC admin,
+REST/WS, SPA, pooler).
 
-## Done (in order)
+T-301..T-310 are codec/unit level against fakes (BACKLOG ED-12); the kernel was never
+assembled (BACKLOG SQ-08). **T-313 kernel assembly — in_progress**, implementation
+starting. Nothing of the SDK (T-311) exists; it moved to M4.
 
-1. Contract: MANIFEST v0.3 (16 pillars), ARCHITECTURE.md, SPEC-01…04 — all FROZEN v1.0
-   (`docs/specs/`). All micro-decisions owner-confirmed; post-freeze amendments go via
-   DEC entries (SPEC-01 §19 DEC-01; SPEC-02 §12.8–12.9; SPEC-03 §9.8; MANIFEST §9/§10).
-2. TASKS.md — 47 tasks M0–M5 with spec↔test traceability (SGT/WPT/SFT/MCT). Status
-   column added (M0 table first).
-3. AGENTS.md (this repo) — binding agent rules. BACKLOG.md live (BL-01 replication seam).
-4. Brand/infra settled (see MANIFEST §9 Q12; crates.io claim at M1).
-5. 2026-11-27: M1 delivered — T-101 core (ids/arrays/cells + Value::Record +
-  core value codec), T-102 catalog+grammar, T-103 compiler (ranks, masks,
-  read-sets, action index), T-104 schema txns (R13, txn-level compile gate),
-  T-105 journal (CRC32C, LSN, torn tail), T-106 snapshot (scoped CRCs, op-log
-  blob), T-107+T-110 parts (zone maps, presence, LSN merge), T-108 codecs
-  (Gorilla/delta-of-delta/varints; zstd feature-gated), T-109 MANIFEST+GC+retention,
-  T-112 bundles (3 v0, idempotent), T-111 CLI smoke (`--smoke <dir>`, byte-identity
-  + restart verify). Tags: `t000-skeleton`, `m0-bootstrap`, `m1-graph-core`.
-  Earlier: git repo live, pushed to `github.com/latticedb-io/latticedb` (SSH remote);
-   README.md; four pre-implementation DECs researched + frozen; **T-000** — workspace
-   skeleton (12 packages per ARCH §3: 10 crates + latticedb-cli + latticedb-tests),
-   CI workflow (fmt/clippy/test, GitHub Actions), rust-toolchain.toml (stable +
-   rustfmt/clippy), rustfmt.toml (edition 2024), .gitignore, fuzz/README (M2 seeding),
-   workspace lints (clippy all=warn), Cargo.lock committed. Skeleton invariants tested
-   (tests/tests/skeleton.rs: layout per ARCH §3, no-async-runtime law, toolchain pin).
-   Local acceptance: fmt/clippy -D warnings/test all green (23 ok targets).
+## Decided this session (2026-11-28)
+
+- **T-311 toolchain (owner):** Gradle Kotlin DSL · JDK 21 LTS · coroutines-first ·
+  JUnit 5 + kotlin-test. Valid whenever the SDK (now M4) is scheduled.
+- **Working rule (owner):** re-read MANIFEST / ARCHITECTURE / specs before every task
+  and refine the live docs → AGENTS.md rule 10.
+- **Sequence (owner):** core + full CLI → listeners → external surfaces last.
+
+## Pending owner decisions (BACKLOG "Spec questions")
+
+- **SQ-04** control-frame wire contract — before T-319 (listeners).
+- **SQ-05** PROXY v2 length byte order — before T-319 / T-402.
+- **SQ-06** pooler implementation language — before T-405.
+- **SQ-07** Host → Database (P6): V1 task vs declared deferral.
+
+## Next (in order = TASKS.md M3 ID order)
+
+1. **T-313 kernel assembly** — re-read done (rule 10): ARCH §5.1/§5.3/§8, SPEC-02 §5,
+   SPEC-03 §1/§3/§6, SPEC-01 §9/§16. Design: one mutation primitive —
+   `plan(command) → records` (read-only validation) and `apply(record, lsn)` shared by
+   live execution AND journal replay; write path plan → journal → apply → quiesce →
+   publish → sync; explicit txns on a session-private scratch.
+2. T-314 read path → T-315 secondary indices → T-316 full CLI → T-317 / T-318 kernel
+   semantics completion → T-319 listeners → T-320 WPT socket-level pass.
 
 ## Environment facts
 
-- Repo: `/home/sergey/dev/latticedb`, git + remote `origin` = SSH
-  `git@github.com:latticedb-io/latticedb.git`. Toolchain: rustup 1.29.3, stable
-  1.99.1 (edition 2024 supported).
-- **GitHub Actions availability on org `latticedb-io` NOT yet confirmed** — verify the
-  first CI run after push; if Actions are disabled, owner must enable them.
-- LICENSE decided 2026-11-27: **Apache-2.0** (`LICENSE` file, copyright Emergenta;
-  `workspace.package.license = "Apache-2.0"`). crates.io claim unblocked for M1.
-- Roles: owner + lead agent = architect pair; lead agent = engineer + QA;
-  **Supervisor** = separate independent agent sessions, review-only, gates DoD.
-
-## Next (in order)
-
-1. **T-001 done** (2026-11-27, review): config tree (6 groups, 40 parameters,
-   deny-unknown-fields + key/section error annotation), safety clamps (startup errors,
-   never silent), 4 profiles (dev/laptop/server/analytics, embedded TOML, v1),
-   `plan_reload` hot/restart classes (8 hot / 32 restart, completeness-tested),
-   autodetect (HostSpecs → deterministic TOML; Host probes CPU/RAM, Hdd conservative
-   until M4 disk probing). Tests: `crates/latticedb/tests/config_wpt10.rs` — 6 fns
-   covering WPT-10.3 (legal extremes round-trip, config level), 10.4 (byte-identical
-   autodetect), 10.5 (strict validation naming key+section), 10.6 (hot/restart
-   classes + 40-param anti-drift completeness). WPT-10.3/10.6 wire-level variants
-   land in M3 (noted in test docs).
-2. **T-101** (M1 chain start): `lattice-core` — identifiers, epochs, node-id spaces,
-   SoA/CSR arrays, cell types (scalars, records + presence bitmask). Acceptance: cell
-   round-trip tests; array invariants (SPEC-01 §3/§5, ARCH §4). Config consumption
-   wiring (arena budgets etc.) follows per-task.
-3. M1 continues per TASKS.md (T-102…T-112). Tag `m0-bootstrap` remains planned at the
-   V1-gate sign-off (owner deferred Supervisor to end of V1; do not tag milestones
-   early).
+- Repo `/home/sergey/dev/latticedb`, remote `origin` = SSH
+  `git@github.com:latticedb-io/latticedb.git`.
+- `~/dev/sdk-kotlin` does not exist; `gh` is logged out (the owner creates remotes).
+- JDK 21 + 25 installed; Gradle 9.9.2 cached in `~/.gradle/wrapper/dists`; no
+  `gradle`/`mvn`/`kotlinc` on PATH.
+- Roles: owner + lead agent = architect pair; lead agent = engineer + QA; Supervisor =
+  separate sessions, review-only (deferred to the V1 gate so far).
 
 ## DoD reminder (per AGENTS.md)
 

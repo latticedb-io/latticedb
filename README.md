@@ -6,9 +6,12 @@
 >
 > By [Emergenta](https://emergenta.dev)
 
-**Status: design frozen, implementation starting.** The constitution
-(`MANIFEST.md` v0.3), architecture, and all four specs are frozen (v1.0). No code
-exists yet; work begins at milestone M0.
+**Status: M0–M2 delivered, M3 in progress.** The constitution (`MANIFEST.md` v0.3),
+architecture, and all four specs are frozen (v1.0); changes go through decision entries.
+The kernel crates (core, schema, storage, engine, validate, tx) are built and tested;
+M3 assembles them into a working database behind a full CLI before the wire listeners
+and any external surface are wired on (MANIFEST §10, sequence re-cut 2026-11-28).
+Progress is tracked in [`TASKS.md`](TASKS.md).
 
 ## What it is
 
@@ -70,11 +73,11 @@ no ANN/BM25 in core, no multi-master distribution. Full list: `MANIFEST.md` §4.
 | **M0** | Bootstrap: repo skeleton, CI, config subsystem |
 | **M1** | Graph core + storage + schema graph; CLI smoke test |
 | **M2** | Semantics engine: full algebra, FSMs, timer wheel, R1–R13, determinism fuzz |
-| **M3** | Native wire protocol + Kotlin SDK + MCP gateway; concurrent writers |
-| **M4** | gRPC admin plane + REST/WS gateway + pooler + Arrow bulk reads |
+| **M3** | Working database core: kernel assembly behind the library-mode API, full CLI, native wire listeners (UDS/TCP); concurrent writers |
+| **M4** | External surfaces (protocol clients only): gRPC admin plane, Kotlin SDK, MCP gateway, REST/WS gateway, SPA read views, pooler, Arrow bulk reads |
 | **M5** | Hardening (Supervisor-gated): compaction, fuzz expansion, audit export |
 
-## Repository layout (planned)
+## Repository layout
 
 Rust workspace per `ARCHITECTURE.md` §3: `crates/lattice-core` (pure in-memory
 kernel, zero I/O), `lattice-schema`, `lattice-storage`, `lattice-engine`,

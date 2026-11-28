@@ -277,6 +277,10 @@ journal facts; re-derivable at replay; wall-clock never enters predicates.
 |---|---|---|
 | M1 | `core`, `storage`, `schema` (compiler skeleton), config subsystem (profiles + autodetect skeleton), `latticedb` bin skeleton, CLI | CLI smoke: build graph, write cells, restart, verify replay; config strict-validation test green |
 | M2 | `engine` (algebra, FSMs, timers, worklist), `validate` (R1–R13), dry-run API | determinism fuzz green; algebra property tests green |
-| M3 | `wire` (UDS+TCP full), Kotlin SDK, MCP gateway, concurrent writers + sequencer | pipelined sessions; subtree-locked parallel writes; MCP tool demo |
-| M4 | `admin`, REST/WS gateway, SPA read views, TLS-at-origin, PROXY v2, pooler, Arrow payloads | gateway matrix demo; pooler identity translation live |
+| M3 | kernel assembly (`tx` write path over the durable journal, `latticedb` library-mode API, kernel read path, secondary indices), full CLI (library mode), kernel semantics completion, `wire` (UDS+TCP full), concurrent writers + sequencer | full CLI drives every command class on a real database with restart/replay identity; every kernel-level SGT ID tested through the assembled kernel; pipelined sessions; subtree-locked parallel writes; every integration-level WPT green over live connections |
+| M4 | external surfaces, protocol clients only: `admin`, Kotlin SDK, MCP gateway, REST/WS gateway, SPA read views, TLS-at-origin, PROXY v2, pooler, Arrow payloads | gateway matrix demo; MCP tool demo; pooler identity translation live |
 | M5 | hardening: compaction under load, audit export, fuzz expansion, index-module seam | load + fuzz gates; seam documented for ANN/BM25 (post-beta) |
+
+Re-cut 2026-11-28 (MANIFEST §10, "Sequence re-cut"): kernel assembly, the kernel read
+path and the full CLI were added to M3; the Kotlin SDK and the MCP gateway moved to M4.
+The core is proven through library mode before any external surface is wired to it.

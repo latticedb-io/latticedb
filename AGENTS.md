@@ -53,6 +53,13 @@ decision log or MANIFEST §10) approved by the architect pair. **No silent spec 
    that milestone's Definition of Done; task-level checkpoints may use `t<NNN>-<slug>`
    (e.g. `t000-skeleton`). Tags are never skipped or retro-batched — the Supervisor uses
    them as review ranges (`git diff <prev-tag>..<tag>`).
+10. **Contract re-read before every task (owner-mandated).** Before starting any task,
+    re-read MANIFEST §8 (milestones), ARCHITECTURE §13 (milestone mapping + exit
+    criteria) and the spec sections the task cites. Check that the task still maps to
+    the contract — dependency order, binding test *level* (unit vs integration), exit
+    criteria — and that the live docs (TASKS.md, BACKLOG.md, STATE.md) match the repo.
+    Findings are recorded (BACKLOG SQ/ED, TASKS.md) and decided before implementation;
+    they are never absorbed silently. Live docs are refined as part of this check.
 
 ## Rust rules (owner-mandated)
 

@@ -222,10 +222,13 @@ compliance time-travel (epoch reads + audit).
   manifest, columnar parts skeleton, schema compiler, CLI smoke test.
 - **M2 — Semantics engine.** Full algebra, FSMs (finalizing/endless), worklist, timer
   wheel, validation R1–R13, dry-run API, determinism fuzz.
-- **M3 — Native wire protocol + Kotlin SDK + MCP server.** UDS + TCP: framing, handshake,
-  pipelining, cancel, keepalive, resume; concurrent subtree-locked writers + sequencer.
-- **M4 — gRPC admin plane + REST/WS gateway + SPA read views.** TLS-at-origin, PROXY v2,
-  first-party pooler prototype, Arrow bulk reads.
+- **M3 — Working database core + full CLI + native wire listeners.** Kernel assembly
+  behind the library-mode API (write path, recovery), full CLI in library mode, UDS + TCP
+  listeners: framing, handshake, pipelining, cancel, keepalive, resume; concurrent
+  subtree-locked writers + sequencer; socket-level protocol acceptance.
+- **M4 — External surfaces.** gRPC admin plane + Kotlin SDK + MCP server + REST/WS gateway
+  + SPA read views — protocol clients only, wired after the core is proven. TLS-at-origin,
+  PROXY v2, first-party pooler prototype, Arrow bulk reads.
 - **M5 — Hardening.** Kernel completion, audit export, compaction under load, fuzz suite,
   index-module seam validated (ANN/BM25 post-beta).
 
@@ -278,6 +281,17 @@ compliance time-travel (epoch reads + audit).
   build-feature-selectable, tunables in §10 config (SPEC-02 §12.9); journal I/O =
   buffered writes + `fdatasync` (default) at the group-commit boundary, O_DIRECT
   deferred behind an M5 evidence gate (SPEC-03 §9.8); Q10 closed — see §9.
+- **Sequence re-cut (2026-11-28, owner):** the database core is assembled, exercised and
+  fixed before anything external is wired to it. **M3** = kernel assembly behind the
+  library-mode API + full CLI + native listeners (UDS/TCP) + socket-level protocol
+  acceptance. **M4** = external surfaces only (gRPC admin, Kotlin SDK, MCP server,
+  REST/WS gateway, SPA read views, pooler) — all protocol clients (P12). The Kotlin SDK
+  and the MCP server move from M3 to M4; their scope is unchanged. Rationale: the
+  contract re-read before T-311 (BACKLOG SQ-03, SQ-08) found the kernel crates tested
+  only in isolation — no command path through ARCHITECTURE §5.1, no durable journal
+  under the sequencer, no CLI — and library mode is a first-class reach distance
+  (SPEC-02 §1, WPT-1.1), so the CLI proves the very command semantics the wire later
+  carries. Surfaces stay designed-in from day one (P12); only the build order changes.
 - **Frozen invariants:** timer-only time · timer wheel owns deadlines/lags · domain terms
   are labels, not entities · business layer owns ergonomics.
 - **Naming & assets (2026-11-26):** company **Emergenta** (bare, no suffixes), product
